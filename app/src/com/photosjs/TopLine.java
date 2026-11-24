@@ -21,15 +21,20 @@ public class TopLine extends View {
     private String titleText = "", countText = "", message = null, oldTitle = null;
     private int messageColor;
     private long messageAt = -1, messageMs = 2600, titleAt = -1;
-    private static final long FADE = 260;
+    private static final long FADE_FULL = 260;
 
     public TopLine(Context c) {
         super(c);
         dp = getResources().getDisplayMetrics().density;
         title.setTypeface(L.font(c));
-        title.setTextSize(11 * dp);
         count.setTypeface(L.font(c));
-        count.setTextSize(11 * dp);
+        setTextScale(1f);
+    }
+
+    void setTextScale(float s) {
+        title.setTextSize(11 * dp * s);
+        count.setTextSize(11 * dp * s);
+        invalidate();
     }
 
     void setTheme(Theme th) {
@@ -72,6 +77,7 @@ public class TopLine extends View {
         if (t == null) return;
         long now = SystemClock.uptimeMillis();
         boolean again = false;
+        long FADE = Math.max(1, Motion.ms(FADE_FULL));
         float pad = 10 * dp;
         float base = getHeight() / 2f + title.getTextSize() * 0.36f;
 

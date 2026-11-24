@@ -2,14 +2,13 @@
 
 A gallery for the Unihertz Jelly Star: a warm, quiet room where the photos are the only thing that's lit.
 
-This first build is the grid:
+Pinterest first:
 
-- **Pinch** to change the grid: 1, 2, 3, 4, 6 or 8 columns. The photo under your fingers stays under your fingers.
-- At few columns the grid becomes the **Pinterest view**: whole photos in their true shape, same width, packed into columns. Settings › pinterest view sets up to how many columns (0 = off).
-- Date labels: by day, by month at 4–6 columns, by year at 8.
+- **The feed**: whole photos in their true shape, packed into equal-width columns, rounded, with air between them. Pinch for more or fewer columns (1, 2, 3, 4, 6, 8); the photo under your fingers stays under your fingers. At many columns it becomes an overview of squares (settings › pinterest view sets where).
+- **Boards**: every device folder as a board, a collage of its newest photos with its name and count. Pinch for bigger or smaller boards; tap one for its feed.
+- **Swipe sideways** between photos, boards and albums; the pages follow the finger. Or tap the glyphs in the bar.
 - **Fast scroll**: drag the thin bar at the right edge.
-- **Folders**: every device folder with its cover, count and (optionally) size; open one for the same grid.
-- **Settings** (the three bars, bottom right): theme, sort and order (remembered per view), videos, folder sizes, columns for new views, Pinterest view. Every row: tap the right of the value to step forward, the left to step back.
+- **Settings** (the three bars, bottom right): theme, text size, animations (full / calm / off), corners (rounded / square), spacing (airy / tight), dates (auto / by day / by month / by year / off), sort and order (remembered per view), videos (hidden = only photos), folder sizes, columns for new views, Pinterest view. Every row: tap the right of the value to step forward, the left to step back.
 - Videos open in VLC.
 
 Not yet: the viewer, selecting, the long-press fan, albums, the editor.

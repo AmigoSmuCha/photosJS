@@ -38,6 +38,33 @@ final class L {
         return p(c).contains(k);
     }
 
+    static final float[] TEXT = {0.9f, 1f, 1.15f, 1.3f};
+    static final String[] TEXT_NAMES = {"small", "medium", "large", "larger"};
+
+    static int textIndex(Context c) {
+        return Math.max(0, Math.min(TEXT.length - 1, getInt(c, "text", 1)));
+    }
+
+    static float textScale(Context c) {
+        return TEXT[textIndex(c)];
+    }
+
+    /** Pinterest look by default: rounded cards with air between them. */
+    static boolean rounded(Context c) {
+        return getInt(c, "rounded", 1) == 1;
+    }
+
+    static boolean airy(Context c) {
+        return getInt(c, "airy", 1) == 1;
+    }
+
+    static final String[] DATE_NAMES = {"auto", "by day", "by month", "by year", "off"};
+
+    /** 0 auto (day / month / year by grid size), 1 day, 2 month, 3 year, 4 off */
+    static int dates(Context c) {
+        return Math.max(0, Math.min(4, getInt(c, "dates", 2)));
+    }
+
     static Typeface font(Context c) {
         if (regular == null) {
             try {

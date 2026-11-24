@@ -56,6 +56,8 @@ final class Media {
         long size;
         long newestTaken, newestModified;
         Item cover;
+        /** up to three photos for the board's collage, newest first */
+        final List<Item> covers = new ArrayList<>(3);
     }
 
     static List<Item> load(ContentResolver cr) {
@@ -169,6 +171,7 @@ final class Media {
                 map.put(it.bucket, f);
                 out.add(f);
             }
+            if (f.covers.size() < 3) f.covers.add(it);
             f.count++;
             f.size += it.size;
             f.newestTaken = Math.max(f.newestTaken, it.taken);

@@ -2,16 +2,20 @@ package com.photosjs;
 
 import android.content.Context;
 import android.graphics.Bitmap;
+import android.graphics.BitmapShader;
 import android.graphics.Canvas;
+import android.graphics.Matrix;
 import android.graphics.Paint;
 import android.graphics.Rect;
 import android.graphics.RectF;
+import android.graphics.Shader;
 import android.os.SystemClock;
 import android.view.GestureDetector;
 import android.view.HapticFeedbackConstants;
 import android.view.MotionEvent;
 import android.view.ScaleGestureDetector;
 import android.view.View;
+import android.view.ViewParent;
 import android.widget.OverScroller;
 
 import java.util.ArrayList;
@@ -19,15 +23,17 @@ import java.util.Calendar;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
-import java.util.Locale;
+import java.util.Map;
 import java.util.Set;
+import java.util.WeakHashMap;
 
 /**
- * The photo grid, drawn by hand so every pixel stays where it should.
- * Two layouts on one pinch: squares, and at few columns the Pinterest view
- * (whole photos in their true shape, packed into equal-width columns).
- * When the column count changes, the photo under the fingers stays under the
- * fingers and everything else springs from where it was to where it goes.
+ * The photo feed, drawn by hand so every pixel stays where it should.
+ * Pinterest first: at few columns, whole photos in their true shape packed
+ * into equal-width columns (each photo drops into the shortest one); at many
+ * columns, an overview of squares. One pinch moves through all of it, and
+ * the photo under the fingers stays under the fingers while the rest spring
+ * from where they were to where they go.
  */
 public class GridView extends View {
     interface Listener {
@@ -41,26 +47,36 @@ public class GridView extends View {
 
     private static final float STEP = 1.32f;      // pinch ratio for one level
     private static final long MORPH_MS = 480;
-    private static final long FADE_MS = 220;
+    private static final long SETTLE_MS = 240;
 
     private final float dp;
-    private final int gap, labelH, pad;
     private Theme t;
     private Thumbs thumbs;
     private Listener listener;
 
     private final Paint paint = new Paint(Paint.ANTI_ALIAS_FLAG | Paint.FILTER_BITMAP_FLAG);
-    private final Paint fill = new Paint();
+    private final Paint shaded = new Paint(Paint.ANTI_ALIAS_FLAG | Paint.FILTER_BITMAP_FLAG);
+    private final Paint fill = new Paint(Paint.ANTI_ALIAS_FLAG);
     private final Paint label = new Paint(Paint.ANTI_ALIAS_FLAG);
     private final Paint small = new Paint(Paint.ANTI_ALIAS_FLAG);
     private final Rect src = new Rect();
+    private final RectF srcF = new RectF();
     private final RectF tmp = new RectF(), tmp2 = new RectF();
+    private final Matrix matrix = new Matrix();
+    private final WeakHashMap<Bitmap, BitmapShader> shaders = new WeakHashMap<>();
+
+    // look
+    private boolean rounded = true, airy = true;
+    private int dateMode = 2;
+    private float textScale = 1f;
+    private float gap, margin, radius;
+    private int labelH;
 
     // data
     private List<Media.Item> items = new ArrayList<>();
     private boolean dated = true, byModified;
-    private int level = 3;
-    private int pinterestUpTo = 2;
+    private int level = 1;
+    private int pinterestUpTo = 3;
 
     // layout, in content coordinates
     private int n;
@@ -89,12 +105,14 @@ public class GridView extends View {
 
     // morph between layouts
     private HashMap<Long, RectF> from = new HashMap<>();
-    private long morphStart = -1;
+    private float fromRadius;
+    private long morphStart = -1, morphMs = MORPH_MS;
     private boolean fadeAll;
 
     // arriving thumbnails settle in
     private final Set<Long> waited = new HashSet<>();
     private final HashMap<Long, Long> arrived = new HashMap<>();
+    private boolean settling;
 
     // fast scroll
     private long lastScrollAt = -10000;
@@ -104,16 +122,12 @@ public class GridView extends View {
     public GridView(Context c) {
         super(c);
         dp = getResources().getDisplayMetrics().density;
-        gap = Math.max(1, Math.round(dp * 1.34f));
-        labelH = Math.round(20 * dp);
-        pad = Math.round(8 * dp);
         fastW = Math.round(3.5f * dp);
         fastH = Math.round(36 * dp);
         fastZone = 30 * dp;
         label.setTypeface(L.font(c));
-        label.setTextSize(9 * dp);
         small.setTypeface(L.font(c));
-        small.setTextSize(8 * dp);
+        applyTextScale();
         scroller = new OverScroller(c);
         gestures = new GestureDetector(c, new GestureDetector.SimpleOnGestureListener() {
             @Override
@@ -159,6 +173,8 @@ public class GridView extends View {
                 liveStart = -1;
                 focusX = d.getFocusX();
                 focusY = d.getFocusY();
+                ViewParent p = getParent();
+                if (p != null) p.requestDisallowInterceptTouchEvent(true);
                 return true;
             }
 
@@ -174,7 +190,7 @@ public class GridView extends View {
                 }
                 boolean end = (cum > 1f && level == 0) || (cum < 1f && level == LEVELS.length - 1);
                 float k = end ? 0.18f : 0.55f;
-                live = clamp(1f + (cum - 1f) * k, 0.88f, 1.14f);
+                live = Motion.level() == Motion.OFF ? 1f : clamp(1f + (cum - 1f) * k, 0.88f, 1.14f);
                 invalidate();
                 return true;
             }
@@ -189,6 +205,8 @@ public class GridView extends View {
         });
     }
 
+    // ---- settings ----
+
     void setTheme(Theme th) {
         t = th;
         invalidate();
@@ -202,12 +220,26 @@ public class GridView extends View {
         listener = l;
     }
 
-    int columns() {
-        return LEVELS[level];
+    /** Corners, air between photos, date labels and text size, all at once. */
+    void setLook(boolean rounded, boolean airy, int dateMode, float textScale) {
+        boolean change = rounded != this.rounded || airy != this.airy || dateMode != this.dateMode
+                || textScale != this.textScale;
+        this.rounded = rounded;
+        this.airy = airy;
+        this.dateMode = dateMode;
+        this.textScale = textScale;
+        applyTextScale();
+        if (change) relayoutKeeping(MORPH);
     }
 
-    boolean isEmpty() {
-        return items.isEmpty();
+    private void applyTextScale() {
+        label.setTextSize(9.5f * dp * textScale);
+        small.setTextSize(8 * dp * textScale);
+        labelH = Math.round(22 * dp * textScale);
+    }
+
+    int columns() {
+        return LEVELS[level];
     }
 
     void setColumns(int cols) {
@@ -233,6 +265,7 @@ public class GridView extends View {
      */
     void setItems(List<Media.Item> list, boolean dated, boolean byModified, int how) {
         HashMap<Long, RectF> old = how == MORPH ? screenRects() : null;
+        float oldRadius = radius;
         long anchorKey = 0;
         float anchorY = 0;
         boolean haveAnchor = false;
@@ -251,9 +284,7 @@ public class GridView extends View {
         if (how == TOP) {
             scrollY = 0;
             scroller.forceFinished(true);
-            from = new HashMap<>();
-            fadeAll = true;
-            morphStart = SystemClock.uptimeMillis();
+            startMorph(new HashMap<Long, RectF>(), true, radius);
         } else {
             if (haveAnchor) {
                 for (int i = 0; i < items.size(); i++) {
@@ -264,17 +295,27 @@ public class GridView extends View {
                 }
             }
             scrollY = clamp(scrollY, 0, maxScroll());
-            if (old != null) {
-                from = old;
-                fadeAll = false;
-                morphStart = SystemClock.uptimeMillis();
-            }
+            if (old != null) startMorph(old, false, oldRadius);
         }
         invalidate();
     }
 
+    private void startMorph(HashMap<Long, RectF> old, boolean fade, float oldRadius) {
+        morphMs = Motion.ms(MORPH_MS);
+        if (morphMs <= 0) {
+            morphStart = -1;
+            from = new HashMap<>();
+            fadeAll = false;
+            return;
+        }
+        from = old;
+        fromRadius = oldRadius;
+        fadeAll = fade;
+        morphStart = SystemClock.uptimeMillis();
+    }
+
     private void relayoutKeeping(int how) {
-        setItems(items, dated, byModified, how == TOP ? TOP : how);
+        setItems(items, dated, byModified, how);
     }
 
     // ---- layout ----
@@ -293,6 +334,18 @@ public class GridView extends View {
                 }
             }
         }
+    }
+
+    /** Air and corners shrink as the photos get smaller. */
+    private void lookFor(int cols) {
+        if (airy) {
+            gap = Math.round((cols <= 3 ? 6f : cols <= 4 ? 4f : 2f) * dp);
+            margin = gap;
+        } else {
+            gap = Math.max(1, Math.round(dp * 1.34f));
+            margin = 0;
+        }
+        radius = !rounded ? 0 : (cols <= 3 ? 10f : cols <= 4 ? 6f : 3f) * dp;
     }
 
     private void relayout() {
@@ -318,39 +371,49 @@ public class GridView extends View {
         if (W <= 0) return;
 
         int cols = LEVELS[level];
+        lookFor(cols);
         masonry = cols <= pinterestUpTo;
+        float inner = W - 2 * margin;
         float[] colX = new float[cols], colR = new float[cols];
         for (int c = 0; c < cols; c++) {
-            colX[c] = Math.round((float) c * (W + gap) / cols);
-            colR[c] = Math.round((float) (c + 1) * (W + gap) / cols) - gap;
+            colX[c] = margin + Math.round((float) c * (inner + gap) / cols);
+            colR[c] = margin + Math.round((float) (c + 1) * (inner + gap) / cols) - gap;
         }
-        float tile = Math.round((float) (W - gap * (cols - 1)) / cols);
+        float tile = Math.round((inner - gap * (cols - 1)) / cols);
         bucket = Thumbs.bucketFor(masonry ? tile * 1.4f : tile);
-        int gran = cols <= 3 ? 0 : cols <= 6 ? 1 : 2;
+        int gran;
+        switch (dateMode) {
+            case 1: gran = 0; break;
+            case 2: gran = 1; break;
+            case 3: gran = 2; break;
+            case 4: gran = -1; break;
+            default: gran = cols <= 3 ? 0 : cols <= 6 ? 1 : 2;
+        }
+        boolean labels = dated && gran >= 0;
 
         float[] colH = new float[cols];
-        float y = 0;
+        float y = margin;
         int col = 0;
-        float rowY = 0;
+        float rowY = y;
         long curKey = Long.MIN_VALUE;
         boolean open = false;
         Calendar cal = Calendar.getInstance();
         Calendar now = Calendar.getInstance();
         for (int i = 0; i < count; i++) {
             Media.Item it = items.get(i);
-            long key = dated ? groupKey(it, gran, cal) : 0;
+            long key = labels ? groupKey(it, gran, cal) : 0;
             if (!open || key != curKey) {
                 if (open) y = closeGroup(colH, rowY, tile) + gap;
                 curKey = key;
                 open = true;
                 gFirst[gCount] = n;
                 gTop[gCount] = y;
-                if (dated) {
+                if (labels) {
                     eItem[n] = -1;
                     eLabel[n] = labelFor(it, gran, cal, now);
-                    ex[n] = pad;
+                    ex[n] = margin;
                     ey[n] = y;
-                    ew[n] = W - 2 * pad;
+                    ew[n] = inner;
                     eh[n] = labelH;
                     n++;
                     y += labelH;
@@ -376,7 +439,7 @@ public class GridView extends View {
             }
         }
         if (open) y = closeGroup(colH, rowY, tile);
-        contentH = y + gap;
+        contentH = y + margin + gap;
     }
 
     private void put(int item, float x, float y, float w, float h) {
@@ -438,7 +501,6 @@ public class GridView extends View {
                 + MON[cal.get(Calendar.MONTH)] + (thisYear ? "" : " " + y);
     }
 
-    /** "nov 2026" for the fast-scroll tag. */
     private String monthYear(Media.Item it) {
         Calendar cal = Calendar.getInstance();
         cal.setTimeInMillis(dateOf(it));
@@ -460,7 +522,6 @@ public class GridView extends View {
         return v < lo ? lo : v > hi ? hi : v;
     }
 
-    /** First group whose bottom is at or below y. */
     private int groupAt(float y) {
         int lo = 0, hi = gCount - 1, ans = gCount;
         while (lo <= hi) {
@@ -492,7 +553,6 @@ public class GridView extends View {
         return best;
     }
 
-    /** Entry under a screen point, or -1. */
     private int entryAt(float x, float sy) {
         float y = sy + scrollY;
         for (int g = groupAt(y); g < gCount && gTop[g] <= y; g++) {
@@ -505,7 +565,7 @@ public class GridView extends View {
 
     private float morphT(long now) {
         if (morphStart < 0) return 1f;
-        float u = (now - morphStart) / (float) MORPH_MS;
+        float u = morphMs <= 0 ? 1f : (now - morphStart) / (float) morphMs;
         if (u >= 1f) {
             morphStart = -1;
             from = new HashMap<>();
@@ -515,13 +575,12 @@ public class GridView extends View {
         return u;
     }
 
-    /** Where an entry is drawn right now on screen (morph included, live scale not). */
     private boolean screenRect(int e, float u, RectF out) {
         out.set(ex[e], ey[e] - scrollY, ex[e] + ew[e], ey[e] + eh[e] - scrollY);
         if (u >= 1f || eItem[e] < 0) return false;
         RectF f = from.get(items.get(eItem[e]).key());
         if (f == null) return false;
-        float s = Spring.ease(u);
+        float s = Motion.ease(u);
         out.set(f.left + (out.left - f.left) * s, f.top + (out.top - f.top) * s,
                 f.right + (out.right - f.right) * s, f.bottom + (out.bottom - f.bottom) * s);
         return true;
@@ -533,7 +592,6 @@ public class GridView extends View {
                 focusX + (r.right - focusX) * live, focusY + (r.bottom - focusY) * live);
     }
 
-    /** Screen rects of everything visible now, by item key, as the eye sees them. */
     private HashMap<Long, RectF> screenRects() {
         HashMap<Long, RectF> m = new HashMap<>();
         if (n == 0) return m;
@@ -553,12 +611,12 @@ public class GridView extends View {
 
     private void changeLevel(int newLevel) {
         HashMap<Long, RectF> old = screenRects();
-        // the photo under the fingers, and where in it the fingers are
-        int a = -1;
+        float oldRadius = radius;
+        boolean found = false;
         float best = Float.MAX_VALUE;
         float fv = 0.5f;
         long anchorKey = 0;
-        for (java.util.Map.Entry<Long, RectF> en : old.entrySet()) {
+        for (Map.Entry<Long, RectF> en : old.entrySet()) {
             RectF r = en.getValue();
             float d;
             if (r.contains(focusX, focusY)) {
@@ -571,13 +629,13 @@ public class GridView extends View {
             if (d < best) {
                 best = d;
                 anchorKey = en.getKey();
-                a = 1;
+                found = true;
                 fv = clamp((focusY - r.top) / Math.max(1f, r.height()), 0f, 1f);
             }
         }
         level = newLevel;
         relayout();
-        if (a >= 0) {
+        if (found) {
             for (int i = 0; i < items.size(); i++) {
                 if (items.get(i).key() == anchorKey) {
                     int e = itemEntry[i];
@@ -587,9 +645,7 @@ public class GridView extends View {
             }
         }
         scrollY = clamp(scrollY, 0, maxScroll());
-        from = old;
-        fadeAll = false;
-        morphStart = SystemClock.uptimeMillis();
+        startMorph(old, false, oldRadius);
         cum = 1f;
         live = 1f;
         performHapticFeedback(HapticFeedbackConstants.CLOCK_TICK);
@@ -611,28 +667,30 @@ public class GridView extends View {
             again = true;
         }
         if (!pinching && liveStart >= 0) {
-            float u = (now - liveStart) / 300f;
+            long d = Motion.ms(300);
+            float u = d <= 0 ? 1f : (now - liveStart) / (float) d;
             if (u >= 1f) {
                 live = 1f;
                 liveStart = -1;
             } else {
-                live = liveFrom + (1f - liveFrom) * Spring.ease(u);
+                live = liveFrom + (1f - liveFrom) * Motion.ease(u);
                 again = true;
             }
         }
         float u = morphT(now);
         if (u < 1f) again = true;
+        float rad = u < 1f ? fromRadius + (radius - fromRadius) * Motion.ease(u) : radius;
 
         int H = getHeight();
         float top = scrollY, bottom = scrollY + H;
-        // during a morph, include what flies in from off-screen positions
         float reach = u < 1f ? H * 0.5f : 0f;
         c.save();
         if (live != 1f) c.scale(live, live, focusX, focusY);
         if (thumbs != null) thumbs.frameStart();
         int placeholder = Theme.mix(t.bg, t.plate, 0.7f);
         label.setColor(t.s1);
-        float labelBase = labelH * 0.5f + label.getTextSize() * 0.36f;
+        float labelBase = labelH * 0.58f + label.getTextSize() * 0.36f;
+        settling = false;
 
         for (int g = groupAt(top - reach); g < gCount && gTop[g] <= bottom + reach; g++) {
             for (int e = gFirst[g]; e <= gLast[g]; e++) {
@@ -640,20 +698,19 @@ public class GridView extends View {
                 if (eItem[e] < 0) {
                     float ly = ey[e] - scrollY;
                     if (ly + labelH < 0 || ly > H) continue;
-                    label.setAlpha(u < 1f ? Math.round(255 * Spring.out(u)) : 255);
-                    c.drawText(eLabel[e], ex[e] + 4 * dp, ly + labelBase, label);
+                    label.setAlpha(u < 1f ? Math.round(255 * Motion.fade(u)) : 255);
+                    c.drawText(eLabel[e], ex[e] + (airy ? 3 * dp : 8 * dp), ly + labelBase, label);
                     continue;
                 }
                 Media.Item it = items.get(eItem[e]);
                 boolean moving = screenRect(e, u, tmp);
                 if (tmp.bottom < 0 || tmp.top > H) continue;
                 float alpha = 1f;
-                if (u < 1f && !moving) alpha = fadeAll || !from.isEmpty() ? Spring.out(u) : 1f;
-                drawItem(c, it, tmp, alpha, placeholder, now);
+                if (u < 1f && !moving && (fadeAll || !from.isEmpty())) alpha = Motion.fade(u);
+                drawItem(c, it, tmp, alpha, placeholder, now, rad);
                 if (alpha < 1f) again = true;
             }
         }
-        // prefetch about a screen ahead and half a screen behind
         if (thumbs != null) {
             float pTop = top - H * 0.5f, pBottom = bottom + H;
             for (int g = groupAt(pTop); g < gCount && gTop[g] <= pBottom; g++) {
@@ -669,14 +726,12 @@ public class GridView extends View {
         c.restore();
 
         again |= drawFastScroll(c, now);
-        if (!arrivedSettling.isEmpty()) again = true;
-        arrivedSettling.clear();
+        if (settling) again = true;
         if (again) postInvalidateOnAnimation();
     }
 
-    private final Set<Long> arrivedSettling = new HashSet<>();
-
-    private void drawItem(Canvas c, Media.Item it, RectF r, float alpha, int placeholder, long now) {
+    private void drawItem(Canvas c, Media.Item it, RectF r, float alpha, int placeholder, long now,
+                          float rad) {
         long key = it.key();
         Bitmap b = null;
         if (thumbs != null) {
@@ -686,7 +741,7 @@ public class GridView extends View {
         fill.setColor(placeholder);
         fill.setAlpha(Math.round(255 * alpha));
         if (b == null) {
-            c.drawRect(r, fill);
+            c.drawRoundRect(r, rad, rad, fill);
             waited.add(key);
             return;
         }
@@ -694,42 +749,40 @@ public class GridView extends View {
         if (waited.remove(key)) arrived.put(key, now);
         Long at = arrived.get(key);
         if (at != null) {
-            float s = (now - at) / (float) FADE_MS;
+            long d = Motion.ms(SETTLE_MS);
+            float s = d <= 0 ? 1f : (now - at) / (float) d;
             if (s >= 1f) {
                 arrived.remove(key);
             } else {
                 settle = s;
-                arrivedSettling.add(key);
-                c.drawRect(r, fill);
+                settling = true;
+                c.drawRoundRect(r, rad, rad, fill);
             }
         }
-        // the thumbnail eases in with a small spring from 96 %
-        float sc = settle < 1f ? 0.96f + 0.04f * Spring.ease(settle) : 1f;
+        float sc = settle < 1f ? 0.96f + 0.04f * Motion.ease(settle) : 1f;
         tmp2.set(r);
-        if (sc != 1f) {
-            float dx = r.width() * (1f - sc) / 2f, dy = r.height() * (1f - sc) / 2f;
-            tmp2.inset(dx, dy);
-        }
-        cover(b, tmp2);
-        paint.setAlpha(Math.round(255 * alpha * Spring.out(settle)));
-        c.drawBitmap(b, src, tmp2, paint);
+        if (sc != 1f) tmp2.inset(r.width() * (1f - sc) / 2f, r.height() * (1f - sc) / 2f);
+        drawPhoto(c, b, tmp2, rad, Math.round(255 * alpha * Motion.fade(settle)));
 
         if (it.video && r.width() > 44 * dp) {
             String d = Media.duration(it.duration);
             float tw = small.measureText(d);
-            float ph = 3 * dp, pv = 1.5f * dp;
+            float ph = 4 * dp, pv = 2 * dp;
             float bh = small.getTextSize() + 2 * pv;
+            float inset = rad > 0 ? 5 * dp : 0;
+            float right = r.right - inset, bottomY = r.bottom - inset;
             fill.setColor(t.bg);
-            fill.setAlpha(Math.round(255 * alpha));
-            c.drawRect(r.right - tw - 2 * ph, r.bottom - bh, r.right, r.bottom, fill);
+            fill.setAlpha(Math.round(235 * alpha));
+            float cr = rad > 0 ? 3 * dp : 0;
+            c.drawRoundRect(right - tw - 2 * ph, bottomY - bh, right, bottomY, cr, cr, fill);
             small.setColor(t.text);
             small.setAlpha(Math.round(255 * alpha));
-            c.drawText(d, r.right - tw - ph, r.bottom - pv - small.getTextSize() * 0.2f, small);
+            c.drawText(d, right - tw - ph, bottomY - pv - small.getTextSize() * 0.2f, small);
         }
     }
 
-    /** Centre-crop source rect so the bitmap covers dst without stretching. */
-    private void cover(Bitmap b, RectF dst) {
+    /** Centre-cropped into dst; through a shader when the corners are rounded. */
+    private void drawPhoto(Canvas c, Bitmap b, RectF dst, float rad, int alpha) {
         float bw = b.getWidth(), bh = b.getHeight();
         float da = dst.width() / Math.max(1f, dst.height()), ba = bw / Math.max(1f, bh);
         if (ba > da) {
@@ -739,6 +792,22 @@ public class GridView extends View {
             float sh = bw / da;
             src.set(0, Math.round((bh - sh) / 2), (int) bw, Math.round((bh + sh) / 2));
         }
+        if (rad <= 0.5f) {
+            paint.setAlpha(alpha);
+            c.drawBitmap(b, src, dst, paint);
+            return;
+        }
+        BitmapShader sh = shaders.get(b);
+        if (sh == null) {
+            sh = new BitmapShader(b, Shader.TileMode.CLAMP, Shader.TileMode.CLAMP);
+            shaders.put(b, sh);
+        }
+        srcF.set(src);
+        matrix.setRectToRect(srcF, dst, Matrix.ScaleToFit.FILL);
+        sh.setLocalMatrix(matrix);
+        shaded.setShader(sh);
+        shaded.setAlpha(alpha);
+        c.drawRoundRect(dst, rad, rad, shaded);
     }
 
     // ---- fast scroll ----
@@ -774,17 +843,19 @@ public class GridView extends View {
             int e = firstVisibleItemEntry();
             if (e >= 0 && dated) {
                 String s = monthYear(items.get(eItem[e]));
+                float old = label.getTextSize();
                 label.setColor(t.text);
                 label.setAlpha(255);
-                label.setTextSize(10 * dp);
+                label.setTextSize(10 * dp * textScale);
                 float tw = label.measureText(s);
-                float ph = 8 * dp, th = 26 * dp;
+                float ph = 8 * dp, th = 26 * dp * textScale;
                 float tx = x - 8 * dp - tw - 2 * ph;
                 float ty = clamp(y + fastH / 2 - th / 2, 0, getHeight() - th);
                 fill.setColor(t.plate);
-                c.drawRect(tx, ty, tx + tw + 2 * ph, ty + th, fill);
+                float cr = rounded ? 4 * dp : 0;
+                c.drawRoundRect(tx, ty, tx + tw + 2 * ph, ty + th, cr, cr, fill);
                 c.drawText(s, tx + ph, ty + th / 2 + label.getTextSize() * 0.36f, label);
-                label.setTextSize(9 * dp);
+                label.setTextSize(old);
             }
         }
         return true;
@@ -802,10 +873,12 @@ public class GridView extends View {
             if (fastUseful() && e.getX() > getWidth() - fastZone
                     && fastAlpha(SystemClock.uptimeMillis()) > 0.2f) {
                 dragFast = true;
+                ViewParent p = getParent();
+                if (p != null) p.requestDisallowInterceptTouchEvent(true);
                 dragFastTo(e.getY());
                 return true;
             }
-            if (wasFlinging) pinchedThisTouch = true; // a touch that stops a fling isn't a tap
+            if (wasFlinging) pinchedThisTouch = true;
         }
         if (dragFast) {
             if (act == MotionEvent.ACTION_MOVE) {
@@ -819,7 +892,14 @@ public class GridView extends View {
         }
         scaler.onTouchEvent(e);
         gestures.onTouchEvent(e);
-        if (act == MotionEvent.ACTION_UP || act == MotionEvent.ACTION_CANCEL) invalidate();
+        if (act == MotionEvent.ACTION_UP || act == MotionEvent.ACTION_CANCEL) {
+            if (pinching && act == MotionEvent.ACTION_CANCEL) {
+                pinching = false;
+                liveFrom = live;
+                liveStart = SystemClock.uptimeMillis();
+            }
+            invalidate();
+        }
         return true;
     }
 
@@ -828,11 +908,6 @@ public class GridView extends View {
         float f = clamp((y - fastH / 2) / Math.max(1f, range), 0f, 1f);
         scrollY = f * maxScroll();
         lastScrollAt = SystemClock.uptimeMillis();
-        invalidate();
-    }
-
-    /** Called when new thumbnails are in the cache. */
-    void thumbsArrived() {
         invalidate();
     }
 }
