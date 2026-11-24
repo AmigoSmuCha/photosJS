@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <color name="ground">#1c1c1c</color>
+    <color name="plate">#262626</color>
+    <color name="ember">#fd4a00</color>
+    <color name="icon_ground">#201d1b</color>
+</resources>

@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- the app paints itself; this only covers the moment before it starts -->
+    <style name="Room" parent="@android:style/Theme.Material.NoActionBar">
+        <item name="android:windowBackground">@color/ground</item>
+        <item name="android:statusBarColor">@color/ground</item>
+        <item name="android:navigationBarColor">@color/plate</item>
+        <item name="android:colorAccent">@color/ember</item>
+    </style>
+</resources>
