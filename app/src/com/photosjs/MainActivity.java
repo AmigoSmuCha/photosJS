@@ -43,7 +43,8 @@ import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 
 public class MainActivity extends Activity implements GridView.Listener, FolderView.Listener,
-        BarView.Listener, Thumbs.Listener, Pager.Listener, FanView.Listener, AlbumSheet.Listener {
+        BarView.Listener, Thumbs.Listener, Pager.Listener, FanView.Listener, AlbumSheet.Listener,
+        ViewerView.Listener {
 
     private static final int REQ_MEDIA = 1, REQ_TRASH = 2, REQ_UNTRASH = 3;
     private static final int TAB_PHOTOS = BarView.P_PHOTOS, TAB_FOLDERS = BarView.P_BOARDS,
@@ -61,6 +62,8 @@ public class MainActivity extends Activity implements GridView.Listener, FolderV
     private SettingsPage settings;
     private FanView fan;
     private AlbumSheet sheet;
+    private ViewerView viewer;
+    private GridView viewerFrom;
     private float dp;
 
     private final ExecutorService io = Executors.newSingleThreadExecutor();
@@ -138,9 +141,13 @@ public class MainActivity extends Activity implements GridView.Listener, FolderV
         hiddenGrid.setVisibility(View.GONE);
         content.addView(hiddenGrid, new FrameLayout.LayoutParams(-1, -1));
 
+        viewer = new ViewerView(this);
+        viewer.setListener(this);
+        root.addView(viewer, new FrameLayout.LayoutParams(-1, -1));
+
         sheet = new AlbumSheet(this);
         sheet.setListener(this);
-        content.addView(sheet, new FrameLayout.LayoutParams(-1, -1));
+        root.addView(sheet, new FrameLayout.LayoutParams(-1, -1));
 
         fan = new FanView(this);
         fan.setListener(this);
@@ -198,6 +205,7 @@ public class MainActivity extends Activity implements GridView.Listener, FolderV
         albumBoards.setTheme(t);
         settings.setTheme(t);
         fan.setTheme(t);
+        viewer.setTheme(t);
         sheet.setLook(t, L.rounded(this), L.textScale(this));
     }
 
@@ -212,6 +220,7 @@ public class MainActivity extends Activity implements GridView.Listener, FolderV
         bar.setLook(rounded, blocks, s);
         settings.setLook(blocks, s);
         fan.setRounded(rounded);
+        viewer.setLook(rounded, nums, s);
         sheet.setLook(t, rounded, s);
         top.setTextScale(s);
         top.setBlocks(blocks);
@@ -736,28 +745,28 @@ public class MainActivity extends Activity implements GridView.Listener, FolderV
 
     @Override
     public void onFanHover(int action) {
-        if (action == FanView.NONE) top.clearMessage();
-        else top.message(action == FanView.HIDE && hiddenOpen ? "unhide" : FanView.name(action), 60000, t.text);
+        if (action == FanView.NONE) unsay();
+        else say(action == FanView.HIDE && hiddenOpen ? "unhide" : FanView.name(action), 60000, t.text);
     }
 
     @Override
     public void onFanCancel() {
-        top.clearMessage();
+        unsay();
     }
 
     @Override
     public void onFanPick(int action) {
-        top.clearMessage();
+        unsay();
         if (action == FanView.WALLPAPER) {
             fan.reopen(new int[] {FanView.W_HOME, FanView.W_LOCKJS});
-            top.message("where should it go?", 60000, 0);
+            say("where should it go?", 60000, 0);
             return;
         }
         fan.close();
         List<Media.Item> items = pending;
         switch (action) {
             case FanView.ALBUM: chooseAlbum(items); break;
-            case FanView.EDIT: top.message("the editor comes in a later build"); break;
+            case FanView.EDIT: say("the editor comes in a later build"); break;
             case FanView.SHARE: share(items); break;
             case FanView.HIDE:
                 if (hiddenOpen) unhide(items);
@@ -775,6 +784,26 @@ public class MainActivity extends Activity implements GridView.Listener, FolderV
                 break;
             case FanView.DROP_ALBUM: if (holdBoard != null) dropAlbum(holdBoard.bucket); break;
         }
+    }
+
+    // ---- messages: the reading line, or the viewer's own while it is open ----
+
+    private void say(String text) {
+        say(text, 2600, 0, null);
+    }
+
+    private void say(String text, long ms, int color, Runnable undo) {
+        if (viewer.isOpen()) viewer.note(text, ms, undo);
+        else say(text, ms, color, undo);
+    }
+
+    private void say(String text, long ms, int color) {
+        say(text, ms, color, null);
+    }
+
+    private void unsay() {
+        if (viewer.isOpen()) viewer.clearNote();
+        else unsay();
     }
 
     // ---- actions ----
@@ -804,7 +833,7 @@ public class MainActivity extends Activity implements GridView.Listener, FolderV
         Store.Album a = album(id);
         afterAlbumsChanged();
         exitSelect();
-        top.message(added == 0 ? "already there" : photosWord(added) + " added to " + (a != null ? a.name : "the album"));
+        say(added == 0 ? "already there" : photosWord(added) + " added to " + (a != null ? a.name : "the album"));
     }
 
     @Override
@@ -819,7 +848,7 @@ public class MainActivity extends Activity implements GridView.Listener, FolderV
         if (!pending.isEmpty()) store.addToAlbum(id, keys(pending));
         afterAlbumsChanged();
         exitSelect();
-        top.message(pending.isEmpty() ? "album made" : photosWord(pending.size()) + " in the new album " + name);
+        say(pending.isEmpty() ? "album made" : photosWord(pending.size()) + " in the new album " + name);
     }
 
     @Override
@@ -840,7 +869,7 @@ public class MainActivity extends Activity implements GridView.Listener, FolderV
         final List<Long> ks = keys(items);
         store.removeFromAlbum(id, ks);
         afterAlbumsChanged();
-        top.message(photosWord(ks.size()) + " out of the album · tap to undo", 5000, 0, new Runnable() {
+        say(photosWord(ks.size()) + " out of the album · tap to undo", 5000, 0, new Runnable() {
             @Override
             public void run() {
                 store.addToAlbum(id, ks);
@@ -854,7 +883,7 @@ public class MainActivity extends Activity implements GridView.Listener, FolderV
         if (openAlbum != null && openAlbum.bucket == id) closeAlbum();
         afterAlbumsChanged();
         if (gone == null) return;
-        top.message("album " + gone.name + " deleted, photos kept · tap to undo", 6000, 0, new Runnable() {
+        say("album " + gone.name + " deleted, photos kept · tap to undo", 6000, 0, new Runnable() {
             @Override
             public void run() {
                 store.restoreAlbum(gone);
@@ -865,10 +894,11 @@ public class MainActivity extends Activity implements GridView.Listener, FolderV
 
     private void hide(List<Media.Item> items) {
         final List<Long> ks = keys(items);
+        if (viewer.isOpen()) for (long k : ks) viewer.remove(k);
         store.hide(ks);
         hiddenKeys.addAll(ks);
         refreshAfterHiding();
-        top.message(photosWord(ks.size()) + " hidden · tap to undo", 5000, 0, new Runnable() {
+        say(photosWord(ks.size()) + " hidden · tap to undo", 5000, 0, new Runnable() {
             @Override
             public void run() {
                 store.unhide(ks);
@@ -883,7 +913,7 @@ public class MainActivity extends Activity implements GridView.Listener, FolderV
         store.unhide(ks);
         hiddenKeys.removeAll(ks);
         refreshAfterHiding();
-        top.message(photosWord(ks.size()) + " back in the feed · tap to undo", 5000, 0, new Runnable() {
+        say(photosWord(ks.size()) + " back in the feed · tap to undo", 5000, 0, new Runnable() {
             @Override
             public void run() {
                 store.hide(ks);
@@ -926,7 +956,7 @@ public class MainActivity extends Activity implements GridView.Listener, FolderV
         try {
             startActivity(Intent.createChooser(send, null));
         } catch (Throwable e) {
-            top.message("nothing here can take these");
+            say("nothing here can take these");
         }
     }
 
@@ -940,7 +970,7 @@ public class MainActivity extends Activity implements GridView.Listener, FolderV
             PendingIntent pi = MediaStore.createTrashRequest(getContentResolver(), uris, true);
             startIntentSenderForResult(pi.getIntentSender(), REQ_TRASH, null, 0, 0, 0);
         } catch (Throwable e) {
-            top.message("Android didn't let photosJS move these to the trash");
+            say("Android didn't let photosJS move these to the trash");
         }
     }
 
@@ -951,7 +981,7 @@ public class MainActivity extends Activity implements GridView.Listener, FolderV
             PendingIntent pi = MediaStore.createTrashRequest(getContentResolver(), uris, false);
             startIntentSenderForResult(pi.getIntentSender(), REQ_UNTRASH, null, 0, 0, 0);
         } catch (Throwable e) {
-            top.message("couldn't bring them back; they are in Android's trash");
+            say("couldn't bring them back; they are in Android's trash");
         }
     }
 
@@ -960,7 +990,8 @@ public class MainActivity extends Activity implements GridView.Listener, FolderV
         super.onActivityResult(code, result, data);
         if (code == REQ_TRASH && result == RESULT_OK) {
             final List<Media.Item> gone = trashing;
-            top.message(photosWord(gone.size()) + " moved to the trash · tap to undo", 6000, 0, new Runnable() {
+            if (viewer.isOpen()) for (Media.Item it : gone) viewer.remove(it.key());
+            say(photosWord(gone.size()) + " moved to the trash · tap to undo", 6000, 0, new Runnable() {
                 @Override
                 public void run() {
                     untrash(gone);
@@ -968,7 +999,7 @@ public class MainActivity extends Activity implements GridView.Listener, FolderV
             });
             load();
         } else if (code == REQ_UNTRASH && result == RESULT_OK) {
-            top.message("back from the trash");
+            say("back from the trash");
             load();
         }
     }
@@ -978,7 +1009,7 @@ public class MainActivity extends Activity implements GridView.Listener, FolderV
                 Locale.ENGLISH).format(new Date(it.taken)).toLowerCase(Locale.ENGLISH);
         String dims = it.w > 0 ? it.w + "×" + it.h + " · " : "";
         String extra = it.video ? " · " + Media.duration(it.duration) : "";
-        top.message(dims + Media.size(it.size) + " · " + when + extra + " · " + it.name, 7000, t.text);
+        say(dims + Media.size(it.size) + " · " + when + extra + " · " + it.name, 7000, t.text);
     }
 
     private void homeWallpaper(final Media.Item it) {
@@ -1004,7 +1035,7 @@ public class MainActivity extends Activity implements GridView.Listener, FolderV
                 main.post(new Runnable() {
                     @Override
                     public void run() {
-                        top.message(m);
+                        say(m);
                     }
                 });
             }
@@ -1020,14 +1051,80 @@ public class MainActivity extends Activity implements GridView.Listener, FolderV
         try {
             startActivity(send);
         } catch (ActivityNotFoundException e) {
-            top.message("lockJS can't take a picture yet; it needs its next update", 5000, 0);
+            say("lockJS can't take a picture yet; it needs its next update", 5000, 0);
         }
     }
 
     // ---- grid and boards ----
 
     @Override
-    public void onOpen(Media.Item it) {
+    public void onOpen(GridView from, Media.Item it) {
+        if (!it.video) {
+            viewerFrom = from;
+            from.setGhost(it.key());
+            viewer.open(from.items(), from.indexOf(it.key()), from.screenRectOf(it.key()), from.radiusNow());
+            return;
+        }
+        playVideo(it);
+    }
+
+    // ---- the viewer ----
+
+    @Override
+    public RectF thumbRect(Media.Item it) {
+        if (viewerFrom == null || !viewerFrom.reveal(it.key())) return null;
+        return viewerFrom.screenRectOf(it.key());
+    }
+
+    @Override
+    public float thumbRadius() {
+        return viewerFrom != null ? viewerFrom.radiusNow() : 0;
+    }
+
+    @Override
+    public Bitmap thumbFor(Media.Item it) {
+        Bitmap b = thumbs.best(it, 2);
+        return b != null ? b : (viewerFrom != null ? viewerFrom.thumbOf(it) : null);
+    }
+
+    @Override
+    public void onViewerIndex(Media.Item it) {
+        if (viewerFrom == null || it == null) return;
+        viewerFrom.setGhost(it.key());
+        viewerFrom.reveal(it.key());
+    }
+
+    @Override
+    public void onViewerClosed() {
+        if (viewerFrom != null) viewerFrom.setGhost(Long.MIN_VALUE);
+        viewerFrom = null;
+    }
+
+    @Override
+    public void onViewerAction(String action, Media.Item it) {
+        List<Media.Item> one = new ArrayList<>();
+        one.add(it);
+        pending = one;
+        switch (action) {
+            case "album": chooseAlbum(one); break;
+            case "share": share(one); break;
+            case "hide": hide(one); break;
+            case "trash": trash(one); break;
+            case "info": info(it); break;
+        }
+    }
+
+    @Override
+    public void onViewerHold(Media.Item it, RectF screen, Bitmap bm, float x, float y) {
+        L.putInt(this, "used_hold", 1);
+        holdBoard = null;
+        pending = new ArrayList<>();
+        pending.add(it);
+        fan.open(screen, bm, 0, x, y, fanActions(), false);
+    }
+
+    @Override
+    public void playVideo(Media.Item it) {
         if (it.video) {
             Intent v = new Intent(Intent.ACTION_VIEW)
                     .setDataAndType(it.uri(), it.mime.isEmpty() ? "video/*" : it.mime)
@@ -1041,9 +1138,7 @@ public class MainActivity extends Activity implements GridView.Listener, FolderV
                     top.message("nothing here can play this video");
                 }
             }
-            return;
         }
-        top.message("the viewer comes in a later build");
     }
 
     @Override
@@ -1114,6 +1209,7 @@ public class MainActivity extends Activity implements GridView.Listener, FolderV
     public void onThumbsArrived() {
         currentView().invalidate();
         if (fan.isOpen()) fan.invalidate();
+        if (viewer.isOpen()) viewer.invalidate();
     }
 
     @Override
@@ -1127,9 +1223,11 @@ public class MainActivity extends Activity implements GridView.Listener, FolderV
         GridView g = activeGrid();
         if (fan.isOpen()) {
             fan.close();
-            top.clearMessage();
+            unsay();
         } else if (sheet.isOpen()) {
             sheet.close();
+        } else if (viewer.isOpen()) {
+            viewer.close();
         } else if (hiddenOpen) {
             closeHidden();
         } else if (g != null && g.selecting()) {

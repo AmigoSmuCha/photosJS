@@ -37,7 +37,7 @@ import java.util.WeakHashMap;
  */
 public class GridView extends View {
     interface Listener {
-        void onOpen(Media.Item it);
+        void onOpen(GridView from, Media.Item it);
 
         void onColumnsChanged(int cols);
 
@@ -138,6 +138,8 @@ public class GridView extends View {
 
     // holding (the long-press fan)
     private boolean holding;
+    // the photo that is open in the viewer leaves its place empty
+    private long ghost = Long.MIN_VALUE;
 
     // fast scroll
     private long lastScrollAt = -10000;
@@ -191,7 +193,7 @@ public class GridView extends View {
                     performHapticFeedback(HapticFeedbackConstants.CLOCK_TICK);
                     if (listener != null) listener.onSelectionChanged(GridView.this, selected.size());
                 } else if (listener != null) {
-                    listener.onOpen(it);
+                    listener.onOpen(GridView.this, it);
                 }
                 return true;
             }
@@ -316,6 +318,55 @@ public class GridView extends View {
         List<Media.Item> out = new ArrayList<>();
         for (Media.Item it : items) if (selected.contains(it.key())) out.add(it);
         return out;
+    }
+
+    void setGhost(long key) {
+        ghost = key;
+        invalidate();
+    }
+
+    float radiusNow() {
+        return radius;
+    }
+
+    /** Scrolls (without animation) so the photo is on screen; true if it is in this feed. */
+    boolean reveal(long key) {
+        for (int i = 0; i < items.size(); i++) {
+            if (items.get(i).key() != key) continue;
+            int e = itemEntry[i];
+            float top = scrollY, bottom = scrollY + getHeight();
+            if (ey[e] < top || ey[e] + eh[e] > bottom) {
+                scrollY = clamp(ey[e] + eh[e] / 2f - getHeight() / 2f, 0, maxScroll());
+                scroller.forceFinished(true);
+                invalidate();
+            }
+            return true;
+        }
+        return false;
+    }
+
+    /** Where the photo is on the screen (screen coordinates), or null. */
+    RectF screenRectOf(long key) {
+        for (int i = 0; i < items.size(); i++) {
+            if (items.get(i).key() != key) continue;
+            int e = itemEntry[i];
+            RectF r = new RectF(ex[e], ey[e] - scrollY, ex[e] + ew[e], ey[e] + eh[e] - scrollY);
+            if (r.bottom < 0 || r.top > getHeight()) return null;
+            int[] loc = new int[2];
+            getLocationOnScreen(loc);
+            r.offset(loc[0], loc[1]);
+            return r;
+        }
+        return null;
+    }
+
+    int indexOf(long key) {
+        for (int i = 0; i < items.size(); i++) if (items.get(i).key() == key) return i;
+        return -1;
+    }
+
+    Bitmap thumbOf(Media.Item it) {
+        return thumbs == null ? null : thumbs.best(it, bucket);
     }
 
     int selectedCount() {
@@ -859,6 +910,7 @@ public class GridView extends View {
     private void drawItem(Canvas c, Media.Item it, RectF r, float alpha, int placeholder, long now,
                           float rad) {
         long key = it.key();
+        if (key == ghost) return;
         Bitmap b = null;
         if (thumbs != null) {
             b = thumbs.best(it, bucket);
