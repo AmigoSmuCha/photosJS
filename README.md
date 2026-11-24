@@ -14,10 +14,9 @@ Pinterest first:
 - Undo: messages that say "tap to undo" in the top line can be tapped.
 - **Fast scroll**: drag the thin bar at the right edge.
 - **Settings** (the last page): 16 themes, text size, headings (plain or lockJS blocks), animations, corners, spacing, Pinterest view, dates (and months as numbers), videos, sorting for every kind of view, board sizes. Every row: tap the right of the value to step forward, the left to step back.
-- **The viewer**: tap a photo and it grows out of its place. Swipe sideways for the next one, down to put it back, pinch or double-tap to zoom, tap for the controls (album, share, hide, trash, info). Hold for the fan.
+- **The viewer**: tap a photo and it grows out of its place. Swipe sideways for the next one, down to put it back, pinch or double-tap to zoom, tap for the controls (album, edit, share, hide, trash, info). Hold for the fan.
+- **The editor** (edit in the fan or the viewer): *crop* — drag the corners or edges (the touch zones are much bigger than the marks), free or square; *draw* — one finger draws in the theme's 16 colours, two fingers zoom and move without marking, the brush keeps its size on screen. Undo every step. Saves as a copy next to the original (settings › edits save as: over the original, which is then kept inside photosJS).
 - Videos open in VLC (in the viewer, a still frame: tap it).
-
-Not yet: the editor.
 
 ## Build
 

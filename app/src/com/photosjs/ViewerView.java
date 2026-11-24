@@ -59,7 +59,7 @@ public class ViewerView extends View {
         void playVideo(Media.Item it);
     }
 
-    static final String[] ACTIONS = {"album", "share", "hide", "trash", "info"};
+    static final String[] ACTIONS = {"album", "edit", "share", "hide", "trash", "info"};
 
     private final float dp;
     private Theme t;

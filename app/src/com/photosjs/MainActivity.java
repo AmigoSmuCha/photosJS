@@ -29,7 +29,10 @@ import android.widget.FrameLayout;
 import android.widget.ImageView;
 import android.widget.LinearLayout;
 
+import java.io.File;
+import java.io.FileOutputStream;
 import java.io.InputStream;
+import java.io.OutputStream;
 import java.text.SimpleDateFormat;
 import java.util.ArrayList;
 import java.util.Date;
@@ -44,9 +47,9 @@ import java.util.concurrent.Executors;
 
 public class MainActivity extends Activity implements GridView.Listener, FolderView.Listener,
         BarView.Listener, Thumbs.Listener, Pager.Listener, FanView.Listener, AlbumSheet.Listener,
-        ViewerView.Listener {
+        ViewerView.Listener, EditorView.Listener {
 
-    private static final int REQ_MEDIA = 1, REQ_TRASH = 2, REQ_UNTRASH = 3;
+    private static final int REQ_MEDIA = 1, REQ_TRASH = 2, REQ_UNTRASH = 3, REQ_WRITE = 4;
     private static final int TAB_PHOTOS = BarView.P_PHOTOS, TAB_FOLDERS = BarView.P_BOARDS,
             TAB_ALBUMS = BarView.P_ALBUMS, TAB_SETTINGS = BarView.P_SETTINGS;
 
@@ -64,6 +67,9 @@ public class MainActivity extends Activity implements GridView.Listener, FolderV
     private AlbumSheet sheet;
     private ViewerView viewer;
     private GridView viewerFrom;
+    private EditorView editor;
+    private Bitmap overwriteWith;
+    private Media.Item overwriteItem;
     private float dp;
 
     private final ExecutorService io = Executors.newSingleThreadExecutor();
@@ -145,6 +151,10 @@ public class MainActivity extends Activity implements GridView.Listener, FolderV
         viewer.setListener(this);
         root.addView(viewer, new FrameLayout.LayoutParams(-1, -1));
 
+        editor = new EditorView(this);
+        editor.setListener(this);
+        root.addView(editor, new FrameLayout.LayoutParams(-1, -1));
+
         sheet = new AlbumSheet(this);
         sheet.setListener(this);
         root.addView(sheet, new FrameLayout.LayoutParams(-1, -1));
@@ -206,6 +216,7 @@ public class MainActivity extends Activity implements GridView.Listener, FolderV
         settings.setTheme(t);
         fan.setTheme(t);
         viewer.setTheme(t);
+        editor.setTheme(t);
         sheet.setLook(t, L.rounded(this), L.textScale(this));
     }
 
@@ -221,6 +232,7 @@ public class MainActivity extends Activity implements GridView.Listener, FolderV
         settings.setLook(blocks, s);
         fan.setRounded(rounded);
         viewer.setLook(rounded, nums, s);
+        editor.setLook(rounded, s);
         sheet.setLook(t, rounded, s);
         top.setTextScale(s);
         top.setBlocks(blocks);
@@ -766,7 +778,7 @@ public class MainActivity extends Activity implements GridView.Listener, FolderV
         List<Media.Item> items = pending;
         switch (action) {
             case FanView.ALBUM: chooseAlbum(items); break;
-            case FanView.EDIT: say("the editor comes in a later build"); break;
+            case FanView.EDIT: if (!items.isEmpty()) edit(items.get(0)); break;
             case FanView.SHARE: share(items); break;
             case FanView.HIDE:
                 if (hiddenOpen) unhide(items);
@@ -793,7 +805,8 @@ public class MainActivity extends Activity implements GridView.Listener, FolderV
     }
 
     private void say(String text, long ms, int color, Runnable undo) {
-        if (viewer.isOpen()) viewer.note(text, ms, undo);
+        if (editor.isOpen()) editor.note(text, ms);
+        else if (viewer.isOpen()) viewer.note(text, ms, undo);
         else say(text, ms, color, undo);
     }
 
@@ -998,6 +1011,13 @@ public class MainActivity extends Activity implements GridView.Listener, FolderV
                 }
             });
             load();
+        } else if (code == REQ_WRITE) {
+            if (result == RESULT_OK) {
+                writeOver();
+            } else {
+                overwriteWith = null;
+                editor.note("not saved", 3000);
+            }
         } else if (code == REQ_UNTRASH && result == RESULT_OK) {
             say("back from the trash");
             load();
@@ -1107,11 +1127,192 @@ public class MainActivity extends Activity implements GridView.Listener, FolderV
         pending = one;
         switch (action) {
             case "album": chooseAlbum(one); break;
+            case "edit": edit(it); break;
             case "share": share(one); break;
             case "hide": hide(one); break;
             case "trash": trash(one); break;
             case "info": info(it); break;
         }
+    }
+
+    // ---- the editor ----
+
+    private boolean overwrite() {
+        return L.getInt(this, "overwrite", 0) == 1;
+    }
+
+    private void edit(Media.Item it) {
+        if (it.video) {
+            say("videos can't be edited here");
+            return;
+        }
+        editor.open(it);
+    }
+
+    @Override
+    public void onEditorMessage(String text) {
+        say(text);
+    }
+
+    @Override
+    public void onEditorClosed() {
+    }
+
+    @Override
+    public void onEditorSave(final Media.Item it) {
+        final boolean over = overwrite() && "image/jpeg".equals(it.mime);
+        editor.note("saving", 60000);
+        io.execute(new Runnable() {
+            @Override
+            public void run() {
+                Bitmap out = null;
+                String err = null;
+                try {
+                    Bitmap full = android.graphics.ImageDecoder.decodeBitmap(
+                            android.graphics.ImageDecoder.createSource(getContentResolver(), it.uri()),
+                            new android.graphics.ImageDecoder.OnHeaderDecodedListener() {
+                                @Override
+                                public void onHeaderDecoded(android.graphics.ImageDecoder d,
+                                                            android.graphics.ImageDecoder.ImageInfo info,
+                                                            android.graphics.ImageDecoder.Source s) {
+                                    d.setAllocator(android.graphics.ImageDecoder.ALLOCATOR_SOFTWARE);
+                                    int w = info.getSize().getWidth(), h = info.getSize().getHeight();
+                                    int max = 4096;
+                                    if (Math.max(w, h) > max) {
+                                        float f = max / (float) Math.max(w, h);
+                                        d.setTargetSize(Math.round(w * f), Math.round(h * f));
+                                    }
+                                }
+                            });
+                    out = editor.render(full);
+                    full.recycle();
+                    if (!over) {
+                        saveCopy(it, out);
+                        out.recycle();
+                        out = null;
+                    } else {
+                        keepOriginal(it);
+                    }
+                } catch (Throwable e) {
+                    err = e.getClass().getSimpleName();
+                }
+                final Bitmap result = out;
+                final String error = err;
+                main.post(new Runnable() {
+                    @Override
+                    public void run() {
+                        if (error != null) {
+                            editor.note("couldn't save (" + error + ")", 5000);
+                            return;
+                        }
+                        if (!over) {
+                            editor.saved();
+                            editor.close();
+                            say("saved as a copy next to the original");
+                            return;
+                        }
+                        overwriteWith = result;
+                        overwriteItem = it;
+                        try {
+                            List<Uri> one = new ArrayList<>();
+                            one.add(it.uri());
+                            PendingIntent pi = MediaStore.createWriteRequest(getContentResolver(), one);
+                            startIntentSenderForResult(pi.getIntentSender(), REQ_WRITE, null, 0, 0, 0);
+                        } catch (Throwable e) {
+                            editor.note("Android didn't let photosJS change the original", 5000);
+                        }
+                    }
+                });
+            }
+        });
+    }
+
+    /** a new picture next to the original, dated like it so it sits beside it */
+    private void saveCopy(Media.Item it, Bitmap out) throws Exception {
+        String rel = relativePath(it);
+        String base = it.name.contains(".") ? it.name.substring(0, it.name.lastIndexOf('.')) : it.name;
+        Uri u = null;
+        for (String path : new String[] {rel, "Pictures/photosJS/"}) {
+            if (path == null) continue;
+            android.content.ContentValues v = new android.content.ContentValues();
+            v.put(MediaStore.MediaColumns.DISPLAY_NAME, base + "_edit.jpg");
+            v.put(MediaStore.MediaColumns.MIME_TYPE, "image/jpeg");
+            v.put(MediaStore.MediaColumns.RELATIVE_PATH, path);
+            v.put(MediaStore.MediaColumns.IS_PENDING, 1);
+            if (it.taken > 0) v.put(MediaStore.MediaColumns.DATE_TAKEN, it.taken + 1);
+            try {
+                u = getContentResolver().insert(
+                        MediaStore.Images.Media.getContentUri(MediaStore.VOLUME_EXTERNAL_PRIMARY), v);
+            } catch (Throwable e) {
+                u = null;
+            }
+            if (u != null) break;
+        }
+        if (u == null) throw new IllegalStateException("no place to save");
+        try (OutputStream os = getContentResolver().openOutputStream(u)) {
+            out.compress(Bitmap.CompressFormat.JPEG, 95, os);
+        }
+        android.content.ContentValues done = new android.content.ContentValues();
+        done.put(MediaStore.MediaColumns.IS_PENDING, 0);
+        getContentResolver().update(u, done, null, null);
+    }
+
+    private String relativePath(Media.Item it) {
+        String[] proj = {MediaStore.MediaColumns.RELATIVE_PATH};
+        try (android.database.Cursor c = getContentResolver().query(it.uri(), proj, null, null, null)) {
+            if (c != null && c.moveToFirst()) return c.getString(0);
+        } catch (Throwable ignored) {
+        }
+        return null;
+    }
+
+    /** before writing over a photo, its original goes into photosJS's own room */
+    private void keepOriginal(Media.Item it) throws Exception {
+        File dir = new File(getFilesDir(), "originals");
+        if (!dir.isDirectory() && !dir.mkdirs()) throw new IllegalStateException("no room for the original");
+        File f = new File(dir, it.key() + "_" + it.name);
+        if (f.exists()) return;
+        try (InputStream in = getContentResolver().openInputStream(it.uri());
+             OutputStream os = new FileOutputStream(f)) {
+            byte[] buf = new byte[1 << 16];
+            int n;
+            while ((n = in.read(buf)) > 0) os.write(buf, 0, n);
+        }
+    }
+
+    private void writeOver() {
+        final Bitmap out = overwriteWith;
+        final Media.Item it = overwriteItem;
+        overwriteWith = null;
+        overwriteItem = null;
+        if (out == null || it == null) return;
+        io.execute(new Runnable() {
+            @Override
+            public void run() {
+                String err = null;
+                try (OutputStream os = getContentResolver().openOutputStream(it.uri(), "wt")) {
+                    out.compress(Bitmap.CompressFormat.JPEG, 95, os);
+                } catch (Throwable e) {
+                    err = e.getClass().getSimpleName();
+                }
+                out.recycle();
+                final String error = err;
+                main.post(new Runnable() {
+                    @Override
+                    public void run() {
+                        if (error != null) {
+                            editor.note("couldn't save (" + error + ")", 5000);
+                            return;
+                        }
+                        thumbs.forget(it);
+                        editor.saved();
+                        editor.close();
+                        say("saved over the original; the original is kept in photosJS");
+                        load();
+                    }
+                });
+            }
+        });
     }
 
     @Override
@@ -1226,6 +1427,8 @@ public class MainActivity extends Activity implements GridView.Listener, FolderV
             unsay();
         } else if (sheet.isOpen()) {
             sheet.close();
+        } else if (editor.isOpen()) {
+            editor.back();
         } else if (viewer.isOpen()) {
             viewer.close();
         } else if (hiddenOpen) {
@@ -1471,6 +1674,19 @@ public class MainActivity extends Activity implements GridView.Listener, FolderV
                 for (int k = 0; k < GridView.LEVELS.length; k++) if (GridView.LEVELS[k] == c) i = k;
                 i = (i + d + GridView.LEVELS.length) % GridView.LEVELS.length;
                 L.putInt(MainActivity.this, "defcols", GridView.LEVELS[i]);
+            }
+        });
+
+        r.add(new Head("editor"));
+        r.add(new Row("edits save as", "the original is always kept") {
+            @Override
+            public String value() {
+                return overwrite() ? "over the original" : "a copy";
+            }
+
+            @Override
+            public void step(int d) {
+                L.putInt(MainActivity.this, "overwrite", overwrite() ? 0 : 1);
             }
         });
 

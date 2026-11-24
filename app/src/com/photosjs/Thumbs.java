@@ -180,6 +180,11 @@ final class Thumbs {
         }, 16);
     }
 
+    /** after a photo changed on disk: drop what we had of it */
+    void forget(Media.Item it) {
+        for (int b = 0; b < SIZES.length; b++) cache.remove(key(it, b));
+    }
+
     void clearFailures() {
         failed.clear();
     }
