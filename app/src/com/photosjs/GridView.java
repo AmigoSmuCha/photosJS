@@ -42,7 +42,7 @@ public class GridView extends View {
         void onColumnsChanged(int cols);
     }
 
-    static final int[] LEVELS = {1, 2, 3, 4, 6, 8};
+    static final int[] LEVELS = {1, 2, 3, 4, 5, 6, 8};
     static final int KEEP = 0, MORPH = 1, TOP = 2;
 
     private static final float STEP = 1.32f;      // pinch ratio for one level
@@ -68,6 +68,7 @@ public class GridView extends View {
     // look
     private boolean rounded = true, airy = true;
     private int dateMode = 2;
+    private boolean dateNumbers, blocks;
     private float textScale = 1f;
     private float gap, margin, radius;
     private int labelH;
@@ -221,13 +222,17 @@ public class GridView extends View {
     }
 
     /** Corners, air between photos, date labels and text size, all at once. */
-    void setLook(boolean rounded, boolean airy, int dateMode, float textScale) {
+    void setLook(boolean rounded, boolean airy, int dateMode, boolean dateNumbers, boolean blocks,
+                 float textScale) {
         boolean change = rounded != this.rounded || airy != this.airy || dateMode != this.dateMode
-                || textScale != this.textScale;
+                || textScale != this.textScale || dateNumbers != this.dateNumbers;
         this.rounded = rounded;
         this.airy = airy;
         this.dateMode = dateMode;
+        this.dateNumbers = dateNumbers;
+        this.blocks = blocks;
         this.textScale = textScale;
+        invalidate();
         applyTextScale();
         if (change) relayoutKeeping(MORPH);
     }
@@ -339,13 +344,13 @@ public class GridView extends View {
     /** Air and corners shrink as the photos get smaller. */
     private void lookFor(int cols) {
         if (airy) {
-            gap = Math.round((cols <= 3 ? 6f : cols <= 4 ? 4f : 2f) * dp);
+            gap = Math.round((cols <= 3 ? 6f : cols <= 5 ? 4f : 2f) * dp);
             margin = gap;
         } else {
             gap = Math.max(1, Math.round(dp * 1.34f));
             margin = 0;
         }
-        radius = !rounded ? 0 : (cols <= 3 ? 10f : cols <= 4 ? 6f : 3f) * dp;
+        radius = !rounded ? 0 : (cols <= 3 ? 10f : cols <= 5 ? 6f : 3f) * dp;
     }
 
     private void relayout() {
@@ -489,21 +494,28 @@ public class GridView extends View {
         cal.setTimeInMillis(dateOf(it));
         int y = cal.get(Calendar.YEAR);
         boolean thisYear = y == now.get(Calendar.YEAR);
+        int m = cal.get(Calendar.MONTH), d = cal.get(Calendar.DAY_OF_MONTH);
         if (gran == 2) return String.valueOf(y);
-        if (gran == 1) return MONTH[cal.get(Calendar.MONTH)] + (thisYear ? "" : " " + y);
+        if (gran == 1) {
+            if (dateNumbers) return (m + 1) + "." + y;
+            return MONTH[m] + (thisYear ? "" : " " + y);
+        }
         if (thisYear && cal.get(Calendar.DAY_OF_YEAR) == now.get(Calendar.DAY_OF_YEAR)) return "today";
         Calendar yd = (Calendar) now.clone();
         yd.add(Calendar.DAY_OF_YEAR, -1);
         if (y == yd.get(Calendar.YEAR) && cal.get(Calendar.DAY_OF_YEAR) == yd.get(Calendar.DAY_OF_YEAR)) {
             return "yesterday";
         }
-        return DAYS[cal.get(Calendar.DAY_OF_WEEK)] + " " + cal.get(Calendar.DAY_OF_MONTH) + " "
-                + MON[cal.get(Calendar.MONTH)] + (thisYear ? "" : " " + y);
+        if (dateNumbers) {
+            return DAYS[cal.get(Calendar.DAY_OF_WEEK)] + " " + d + "." + (m + 1) + "." + (thisYear ? "" : String.valueOf(y));
+        }
+        return DAYS[cal.get(Calendar.DAY_OF_WEEK)] + " " + d + " " + MON[m] + (thisYear ? "" : " " + y);
     }
 
     private String monthYear(Media.Item it) {
         Calendar cal = Calendar.getInstance();
         cal.setTimeInMillis(dateOf(it));
+        if (dateNumbers) return (cal.get(Calendar.MONTH) + 1) + "." + cal.get(Calendar.YEAR);
         return MON[cal.get(Calendar.MONTH)] + " " + cal.get(Calendar.YEAR);
     }
 
@@ -699,7 +711,13 @@ public class GridView extends View {
                     float ly = ey[e] - scrollY;
                     if (ly + labelH < 0 || ly > H) continue;
                     label.setAlpha(u < 1f ? Math.round(255 * Motion.fade(u)) : 255);
-                    c.drawText(eLabel[e], ex[e] + (airy ? 3 * dp : 8 * dp), ly + labelBase, label);
+                    float lx = ex[e] + (airy ? 3 * dp : 8 * dp);
+                    if (blocks) {
+                        BlockFont.draw(c, eLabel[e], lx, ly + labelH * 0.56f,
+                                BlockFont.block(label.getTextSize()), label);
+                    } else {
+                        c.drawText(eLabel[e], lx, ly + labelBase, label);
+                    }
                     continue;
                 }
                 Media.Item it = items.get(eItem[e]);
@@ -847,14 +865,16 @@ public class GridView extends View {
                 label.setColor(t.text);
                 label.setAlpha(255);
                 label.setTextSize(10 * dp * textScale);
-                float tw = label.measureText(s);
+                float bk = BlockFont.block(label.getTextSize());
+                float tw = blocks ? BlockFont.width(s, bk) : label.measureText(s);
                 float ph = 8 * dp, th = 26 * dp * textScale;
                 float tx = x - 8 * dp - tw - 2 * ph;
                 float ty = clamp(y + fastH / 2 - th / 2, 0, getHeight() - th);
                 fill.setColor(t.plate);
                 float cr = rounded ? 4 * dp : 0;
                 c.drawRoundRect(tx, ty, tx + tw + 2 * ph, ty + th, cr, cr, fill);
-                c.drawText(s, tx + ph, ty + th / 2 + label.getTextSize() * 0.36f, label);
+                if (blocks) BlockFont.draw(c, s, tx + ph, ty + th / 2, bk, label);
+                else c.drawText(s, tx + ph, ty + th / 2 + label.getTextSize() * 0.36f, label);
                 label.setTextSize(old);
             }
         }

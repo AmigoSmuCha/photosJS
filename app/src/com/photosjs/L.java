@@ -38,8 +38,8 @@ final class L {
         return p(c).contains(k);
     }
 
-    static final float[] TEXT = {0.9f, 1f, 1.15f, 1.3f};
-    static final String[] TEXT_NAMES = {"small", "medium", "large", "larger"};
+    static final float[] TEXT = {0.9f, 1f, 1.15f, 1.3f, 1.5f};
+    static final String[] TEXT_NAMES = {"small", "medium", "large", "larger", "largest"};
 
     static int textIndex(Context c) {
         return Math.max(0, Math.min(TEXT.length - 1, getInt(c, "text", 1)));
@@ -59,6 +59,16 @@ final class L {
     }
 
     static final String[] DATE_NAMES = {"auto", "by day", "by month", "by year", "off"};
+
+    /** months as words ("22 nov", "november") or numbers ("22.11.", "11.2026") */
+    static boolean dateNumbers(Context c) {
+        return getInt(c, "datenum", 0) == 1;
+    }
+
+    /** headings (date labels, the reading line) in the blocks face from lockJS */
+    static boolean blocks(Context c) {
+        return getInt(c, "blocks", 0) == 1;
+    }
 
     /** 0 auto (day / month / year by grid size), 1 day, 2 month, 3 year, 4 off */
     static int dates(Context c) {

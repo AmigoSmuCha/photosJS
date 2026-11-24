@@ -20,6 +20,7 @@ public class TopLine extends View {
     private Theme t;
     private String titleText = "", countText = "", message = null, oldTitle = null;
     private int messageColor;
+    private boolean blocks;
     private long messageAt = -1, messageMs = 2600, titleAt = -1;
     private static final long FADE_FULL = 260;
 
@@ -29,6 +30,12 @@ public class TopLine extends View {
         title.setTypeface(L.font(c));
         count.setTypeface(L.font(c));
         setTextScale(1f);
+    }
+
+    /** title and count in the blocks face; messages stay in the plain one */
+    void setBlocks(boolean b) {
+        blocks = b;
+        invalidate();
     }
 
     void setTextScale(float s) {
@@ -91,7 +98,10 @@ public class TopLine extends View {
             else message = null;
             if (message != null) again = true;
         }
-        float countW = countText.isEmpty() ? 0 : count.measureText(countText);
+        float bk = BlockFont.block(title.getTextSize());
+        float cy = getHeight() / 2f;
+        float countW = countText.isEmpty() ? 0
+                : blocks ? BlockFont.width(countText, bk) : count.measureText(countText);
         float room = getWidth() - 2 * pad - countW - 12 * dp;
 
         // title (cross-fading from the old one when it changed)
@@ -107,13 +117,13 @@ public class TopLine extends View {
                 if (oldTitle != null) {
                     title.setColor(t.text);
                     title.setAlpha(Math.round(255 * (1f - u) * (1f - m)));
-                    c.drawText(ellipsize(oldTitle, room), pad, base, title);
+                    heading(c, oldTitle, pad, base, cy, bk, room);
                 }
             }
         }
         title.setColor(t.text);
         title.setAlpha(Math.round(255 * ta * (1f - m)));
-        c.drawText(ellipsize(titleText, room), pad, base, title);
+        heading(c, titleText, pad, base, cy, bk, room);
         if (m > 0f && message != null) {
             title.setColor(messageColor != 0 ? messageColor : t.s1);
             title.setAlpha(Math.round(255 * m));
@@ -121,9 +131,15 @@ public class TopLine extends View {
         }
         if (!countText.isEmpty()) {
             count.setColor(t.s1);
-            c.drawText(countText, getWidth() - pad - countW, base, count);
+            if (blocks) BlockFont.draw(c, countText, getWidth() - pad - countW, cy, bk, count);
+            else c.drawText(countText, getWidth() - pad - countW, base, count);
         }
         if (again) postInvalidateOnAnimation();
+    }
+
+    private void heading(Canvas c, String s, float x, float base, float cy, float bk, float room) {
+        if (blocks) BlockFont.draw(c, BlockFont.fit(s, bk, Math.max(0, room)), x, cy, bk, title);
+        else c.drawText(ellipsize(s, room), x, base, title);
     }
 
     private String ellipsize(String s, float room) {

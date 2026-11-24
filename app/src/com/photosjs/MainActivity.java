@@ -37,7 +37,8 @@ public class MainActivity extends Activity implements GridView.Listener, FolderV
         BarView.Listener, Thumbs.Listener, Pager.Listener {
 
     private static final int REQ_MEDIA = 1;
-    private static final int TAB_PHOTOS = 0, TAB_FOLDERS = 1, TAB_ALBUMS = 2;
+    private static final int TAB_PHOTOS = BarView.P_PHOTOS, TAB_FOLDERS = BarView.P_BOARDS,
+            TAB_ALBUMS = BarView.P_ALBUMS, TAB_SETTINGS = BarView.P_SETTINGS;
 
     private Theme t;
     private Thumbs thumbs;
@@ -48,9 +49,8 @@ public class MainActivity extends Activity implements GridView.Listener, FolderV
     private GridView photos, folderGrid;
     private FolderView folderView;
     private AlbumsPage albums;
-    private SettingsPanel panel;
-    private View catcher;
-    private boolean panelOpen;
+    private SettingsPage settings;
+    private boolean hasAlbums;
     private float dp;
 
     private final ExecutorService io = Executors.newSingleThreadExecutor();
@@ -109,41 +109,13 @@ public class MainActivity extends Activity implements GridView.Listener, FolderV
         pager.addView(boards);
 
         albums = new AlbumsPage(this);
-        pager.addView(albums);
-
-        // taps above the open settings sheet close it; nothing is dimmed
-        catcher = new View(this);
-        catcher.setVisibility(View.GONE);
-        catcher.setOnTouchListener(new View.OnTouchListener() {
-            @Override
-            public boolean onTouch(View v, MotionEvent e) {
-                if (e.getActionMasked() == MotionEvent.ACTION_UP) closePanel();
-                return true;
-            }
-        });
-        content.addView(catcher, new FrameLayout.LayoutParams(-1, -1));
-
-        panel = new SettingsPanel(this);
-        panel.setVisibility(View.GONE);
-        content.addView(panel, new FrameLayout.LayoutParams(-1, -2, Gravity.BOTTOM));
-        content.addOnLayoutChangeListener(new View.OnLayoutChangeListener() {
-            @Override
-            public void onLayoutChange(View v, int l, int tp, int r, int b, int ol, int ot, int or, int ob) {
-                final int h = b - tp;
-                if (h > 0 && h != ob - ot) {
-                    panel.post(new Runnable() {
-                        @Override
-                        public void run() {
-                            panel.setMaxHeight(Math.round(h * 0.82f));
-                        }
-                    });
-                }
-            }
-        });
+        settings = new SettingsPage(this);
+        setPages();
 
         setContentView(root);
         applyTheme();
         applyLook(false);
+        settings.setRows(rows());
         photos.setPinterestUpTo(pinterest());
         folderGrid.setPinterestUpTo(pinterest());
         photos.setColumns(colsOf("all"));
@@ -180,24 +152,26 @@ public class MainActivity extends Activity implements GridView.Listener, FolderV
         folderGrid.setTheme(t);
         folderView.setTheme(t);
         albums.setTheme(t);
-        panel.setTheme(t);
+        settings.setTheme(t);
     }
 
     private void applyLook(boolean relayoutBars) {
-        boolean rounded = L.rounded(this), airy = L.airy(this);
+        boolean rounded = L.rounded(this), airy = L.airy(this), blocks = L.blocks(this);
+        boolean nums = L.dateNumbers(this);
         float s = L.textScale(this);
         int dates = L.dates(this);
-        photos.setLook(rounded, airy, dates, s);
-        folderGrid.setLook(rounded, airy, dates, s);
+        photos.setLook(rounded, airy, dates, nums, blocks, s);
+        folderGrid.setLook(rounded, airy, dates, nums, blocks, s);
         folderView.setLook(rounded, airy, s);
-        bar.setLook(rounded, s);
-        panel.setLook(rounded, s);
+        bar.setLook(rounded, blocks, s);
+        settings.setLook(blocks, s);
         top.setTextScale(s);
+        top.setBlocks(blocks);
         albums.setTextScale(s);
         LinearLayout.LayoutParams tl = (LinearLayout.LayoutParams) top.getLayoutParams();
         tl.height = Math.round(27 * dp * s);
         LinearLayout.LayoutParams bl = (LinearLayout.LayoutParams) bar.getLayoutParams();
-        bl.height = Math.round(46 * dp * Math.min(1.2f, s));
+        bl.height = Math.round(46 * dp * Math.min(1.25f, s));
         if (relayoutBars) {
             top.requestLayout();
             bar.requestLayout();
@@ -335,12 +309,17 @@ public class MainActivity extends Activity implements GridView.Listener, FolderV
         return "all";
     }
 
+    /** sorting is set for three kinds of view: the feed, the boards, and every folder's feed */
+    private static String sortKey(String view) {
+        return view.startsWith("f:") ? "folderfeeds" : view;
+    }
+
     private int sortOf(String view) {
-        return L.getInt(this, "sort:" + view, L.getInt(this, "sort:all", Media.BY_TAKEN));
+        return L.getInt(this, "sort:" + sortKey(view), L.getInt(this, "sort:all", Media.BY_TAKEN));
     }
 
     private boolean descOf(String view) {
-        return L.getInt(this, "desc:" + view, L.getInt(this, "desc:all", 1)) == 1;
+        return L.getInt(this, "desc:" + sortKey(view), L.getInt(this, "desc:all", 1)) == 1;
     }
 
     private int defCols() {
@@ -360,7 +339,7 @@ public class MainActivity extends Activity implements GridView.Listener, FolderV
     }
 
     private int pinterest() {
-        return L.getInt(this, "pinterest", 3);
+        return Math.max(0, Math.min(5, L.getInt(this, "pinterest", 3)));
     }
 
     private void refreshAll(int how) {
@@ -415,6 +394,8 @@ public class MainActivity extends Activity implements GridView.Listener, FolderV
             top.set("photos", loadedOnce ? count(photoCount) : "");
         } else if (tab == TAB_ALBUMS) {
             top.set("albums", "");
+        } else if (tab == TAB_SETTINGS) {
+            top.set("settings", "");
         } else if (openFolder == null) {
             top.set("folders", count(folderCount));
         } else {
@@ -425,7 +406,32 @@ public class MainActivity extends Activity implements GridView.Listener, FolderV
     private View currentView() {
         if (tab == TAB_PHOTOS) return photos;
         if (tab == TAB_ALBUMS) return albums;
+        if (tab == TAB_SETTINGS) return settings;
         return openFolder == null ? folderView : folderGrid;
+    }
+
+    /** photos, boards, albums (only once there is one), settings */
+    private void setPages() {
+        bar.setHasAlbums(hasAlbums);
+        if (hasAlbums) pager.setPages(photos, boards, albums, settings);
+        else pager.setPages(photos, boards, settings);
+    }
+
+    private int logical(int pagerIndex) {
+        View v = pagerIndex < pager.getChildCount() ? pager.getChildAt(pagerIndex) : null;
+        if (v == boards) return TAB_FOLDERS;
+        if (v == albums) return TAB_ALBUMS;
+        if (v == settings) return TAB_SETTINGS;
+        return TAB_PHOTOS;
+    }
+
+    private View pageView(int logical) {
+        switch (logical) {
+            case TAB_FOLDERS: return boards;
+            case TAB_ALBUMS: return albums;
+            case TAB_SETTINGS: return settings;
+            default: return photos;
+        }
     }
 
     private void crossfade(final View out, View in) {
@@ -459,19 +465,21 @@ public class MainActivity extends Activity implements GridView.Listener, FolderV
 
     @Override
     public void onPageSelected(int page) {
-        if (page == tab) return;
-        tab = page;
+        int lg = logical(page);
+        if (lg == TAB_SETTINGS && settings != null) settings.setRows(rows());
+        if (lg == tab) return;
+        tab = lg;
         updateTop();
     }
 
     @Override
-    public void onTab(int i) {
-        closePanel();
-        if (i == tab) {
-            if (i == TAB_FOLDERS && openFolder != null) closeFolder();
+    public void onPage(int lg) {
+        if (lg == tab) {
+            if (lg == TAB_FOLDERS && openFolder != null) closeFolder();
             return;
         }
-        pager.setPage(i, true);
+        int i = pager.indexOf(pageView(lg));
+        if (i >= 0) pager.setPage(i, true);
     }
 
     @Override
@@ -480,9 +488,7 @@ public class MainActivity extends Activity implements GridView.Listener, FolderV
     }
 
     @Override
-    public void onSettings() {
-        if (panelOpen) closePanel();
-        else openPanel();
+    public void onSelectAction(int action) {
     }
 
     // ---- grid and folders ----
@@ -545,12 +551,10 @@ public class MainActivity extends Activity implements GridView.Listener, FolderV
 
     @Override
     public void onBackPressed() {
-        if (panelOpen) {
-            closePanel();
-        } else if (tab == TAB_FOLDERS && openFolder != null) {
+        if (tab == TAB_FOLDERS && openFolder != null) {
             closeFolder();
         } else if (tab != TAB_PHOTOS) {
-            pager.setPage(TAB_PHOTOS, true);
+            pager.setPage(0, true);
         } else {
             super.onBackPressed();
         }
@@ -558,47 +562,7 @@ public class MainActivity extends Activity implements GridView.Listener, FolderV
 
     // ---- settings ----
 
-    private void openPanel() {
-        panel.setRows(rows());
-        panelOpen = true;
-        pager.setLocked(true);
-        bar.setSettingsOpen(true);
-        panel.setVisibility(View.VISIBLE);
-        catcher.setVisibility(View.VISIBLE);
-        catcher.bringToFront();
-        panel.bringToFront();
-        panel.animate().cancel();
-        long d = Motion.ms(300);
-        if (d <= 0) {
-            panel.setTranslationY(0);
-            return;
-        }
-        panel.setTranslationY(panel.wantedHeight());
-        panel.animate().translationY(0).setDuration(d).setInterpolator(new DecelerateInterpolator(2f));
-    }
-
-    private void closePanel() {
-        if (!panelOpen) return;
-        panelOpen = false;
-        pager.setLocked(false);
-        bar.setSettingsOpen(false);
-        catcher.setVisibility(View.GONE);
-        panel.animate().cancel();
-        long d = Motion.ms(220);
-        if (d <= 0) {
-            panel.setVisibility(View.GONE);
-            return;
-        }
-        panel.animate().translationY(panel.getHeight()).setDuration(d)
-                .setInterpolator(new DecelerateInterpolator()).withEndAction(new Runnable() {
-                    @Override
-                    public void run() {
-                        if (!panelOpen) panel.setVisibility(View.GONE);
-                    }
-                });
-    }
-
-    private abstract static class Row implements SettingsPanel.Row {
+    private abstract static class Row implements SettingsPage.Row {
         final String label, desc;
 
         Row(String label, String desc) {
@@ -617,9 +581,19 @@ public class MainActivity extends Activity implements GridView.Listener, FolderV
         }
     }
 
-    private String viewName() {
-        if (tab == TAB_PHOTOS || tab == TAB_ALBUMS) return "photos";
-        return openFolder == null ? "the boards" : "this folder";
+    private static final class Head extends Row {
+        Head(String name) {
+            super(name, "");
+        }
+
+        @Override
+        public String value() {
+            return null;
+        }
+
+        @Override
+        public void step(int d) {
+        }
     }
 
     private int cycle(String key, int def, int count, int d) {
@@ -628,8 +602,48 @@ public class MainActivity extends Activity implements GridView.Listener, FolderV
         return v;
     }
 
-    private List<SettingsPanel.Row> rows() {
-        List<SettingsPanel.Row> r = new ArrayList<>();
+    private String sortValue(String view) {
+        return Media.SORT_NAMES[sortOf(view)];
+    }
+
+    private String orderValue(String view) {
+        int by = sortOf(view);
+        boolean desc = descOf(view);
+        if (by == Media.BY_NAME) return desc ? "z to a" : "a to z";
+        if (by == Media.BY_SIZE) return desc ? "largest first" : "smallest first";
+        return desc ? "newest first" : "oldest first";
+    }
+
+    private void sortRows(List<SettingsPage.Row> r, final String view, String what) {
+        r.add(new Row(what + " sorted by", "remembered") {
+            @Override
+            public String value() {
+                return sortValue(view);
+            }
+
+            @Override
+            public void step(int d) {
+                L.putInt(MainActivity.this, "sort:" + view, (sortOf(view) + d + 4) % 4);
+                resort(view);
+            }
+        });
+        r.add(new Row(what + " order", "remembered") {
+            @Override
+            public String value() {
+                return orderValue(view);
+            }
+
+            @Override
+            public void step(int d) {
+                L.putInt(MainActivity.this, "desc:" + view, descOf(view) ? 0 : 1);
+                resort(view);
+            }
+        });
+    }
+
+    private List<SettingsPage.Row> rows() {
+        List<SettingsPage.Row> r = new ArrayList<>();
+        r.add(new Head("look"));
         r.add(new Row("theme", "the colours of the room") {
             @Override
             public String value() {
@@ -651,7 +665,18 @@ public class MainActivity extends Activity implements GridView.Listener, FolderV
             public void step(int d) {
                 cycle("text", 1, L.TEXT.length, d);
                 applyLook(true);
-                panel.setRows(rows());
+            }
+        });
+        r.add(new Row("headings", "dates and titles: plain letters or lockJS blocks") {
+            @Override
+            public String value() {
+                return L.blocks(MainActivity.this) ? "blocks" : "plain";
+            }
+
+            @Override
+            public void step(int d) {
+                cycle("blocks", 0, 2, d);
+                applyLook(false);
             }
         });
         r.add(new Row("animations", "full springs, calm fades, or none") {
@@ -666,7 +691,7 @@ public class MainActivity extends Activity implements GridView.Listener, FolderV
                 Motion.load(MainActivity.this);
             }
         });
-        r.add(new Row("corners", "of photos, boards and sheets") {
+        r.add(new Row("corners", "of photos and boards") {
             @Override
             public String value() {
                 return L.rounded(MainActivity.this) ? "rounded" : "square";
@@ -690,6 +715,23 @@ public class MainActivity extends Activity implements GridView.Listener, FolderV
                 applyLook(false);
             }
         });
+
+        r.add(new Head("feed"));
+        r.add(new Row("pinterest view", "whole photos at this many columns or fewer") {
+            @Override
+            public String value() {
+                int p = pinterest();
+                return p == 0 ? "off" : "up to " + p + (p == 1 ? " column" : " columns");
+            }
+
+            @Override
+            public void step(int d) {
+                int p = (pinterest() + d + 6) % 6;
+                L.putInt(MainActivity.this, "pinterest", p);
+                photos.setPinterestUpTo(p);
+                folderGrid.setPinterestUpTo(p);
+            }
+        });
         r.add(new Row("dates", "labels between photos when sorted by date") {
             @Override
             public String value() {
@@ -702,33 +744,16 @@ public class MainActivity extends Activity implements GridView.Listener, FolderV
                 applyLook(false);
             }
         });
-        final String view = viewKey();
-        r.add(new Row("sort by", "for " + viewName() + ", remembered") {
+        r.add(new Row("months", "as names (22 nov) or numbers (22.11.)") {
             @Override
             public String value() {
-                return Media.SORT_NAMES[sortOf(view)];
+                return L.dateNumbers(MainActivity.this) ? "numbers" : "names";
             }
 
             @Override
             public void step(int d) {
-                L.putInt(MainActivity.this, "sort:" + view, (sortOf(view) + d + 4) % 4);
-                resortCurrent();
-            }
-        });
-        r.add(new Row("order", "for " + viewName() + ", remembered") {
-            @Override
-            public String value() {
-                int by = sortOf(view);
-                boolean desc = descOf(view);
-                if (by == Media.BY_NAME) return desc ? "z to a" : "a to z";
-                if (by == Media.BY_SIZE) return desc ? "largest first" : "smallest first";
-                return desc ? "newest first" : "oldest first";
-            }
-
-            @Override
-            public void step(int d) {
-                L.putInt(MainActivity.this, "desc:" + view, descOf(view) ? 0 : 1);
-                resortCurrent();
+                cycle("datenum", 0, 2, d);
+                applyLook(false);
             }
         });
         r.add(new Row("videos", "hidden: only photos and pictures are shown") {
@@ -743,22 +768,9 @@ public class MainActivity extends Activity implements GridView.Listener, FolderV
                 refreshPhotos(GridView.MORPH);
                 refreshFolders(false);
                 refreshFolderGrid(GridView.MORPH);
-                updateTop();
             }
         });
-        r.add(new Row("folder sizes", "how much space each board takes") {
-            @Override
-            public String value() {
-                return sizes() ? "shown" : "hidden";
-            }
-
-            @Override
-            public void step(int d) {
-                L.putInt(MainActivity.this, "sizes", sizes() ? 0 : 1);
-                refreshFolders(false);
-            }
-        });
-        r.add(new Row("new views", "columns a folder opens with") {
+        r.add(new Row("folders open with", "columns, until you pinch them") {
             @Override
             public String value() {
                 int c = defCols();
@@ -774,23 +786,29 @@ public class MainActivity extends Activity implements GridView.Listener, FolderV
                 L.putInt(MainActivity.this, "defcols", GridView.LEVELS[i]);
             }
         });
-        r.add(new Row("pinterest view", "whole photos at this many columns or fewer") {
+
+        r.add(new Head("sorting"));
+        sortRows(r, "all", "photos");
+        sortRows(r, "folders", "boards");
+        sortRows(r, "folderfeeds", "folders");
+
+        r.add(new Head("boards"));
+        r.add(new Row("folder sizes", "how much space each board takes") {
             @Override
             public String value() {
-                int p = pinterest();
-                return p == 0 ? "off" : "up to " + p + (p == 1 ? " column" : " columns");
+                return sizes() ? "shown" : "hidden";
             }
 
             @Override
             public void step(int d) {
-                int p = (pinterest() + d + 5) % 5;
-                L.putInt(MainActivity.this, "pinterest", p);
-                photos.setPinterestUpTo(p);
-                folderGrid.setPinterestUpTo(p);
+                L.putInt(MainActivity.this, "sizes", sizes() ? 0 : 1);
+                refreshFolders(false);
             }
         });
+
         final String crash = L.getString(this, "crash", "");
         if (!crash.isEmpty()) {
+            r.add(new Head("trouble"));
             String first = crash.split("\n")[0];
             r.add(new Row("last crash", first) {
                 @Override
@@ -804,17 +822,17 @@ public class MainActivity extends Activity implements GridView.Listener, FolderV
                     if (cm != null) cm.setPrimaryClip(ClipData.newPlainText("photosJS crash", crash));
                     L.putString(MainActivity.this, "crash", "");
                     top.message("crash report copied");
-                    panel.setRows(rows());
+                    settings.setRows(rows());
                 }
             });
         }
         return r;
     }
 
-    private void resortCurrent() {
-        if (tab == TAB_FOLDERS && openFolder == null) refreshFolders(true);
-        else if (tab == TAB_FOLDERS) refreshFolderGrid(GridView.TOP);
-        else refreshPhotos(GridView.TOP);
+    private void resort(String view) {
+        if (view.equals("all")) refreshPhotos(GridView.TOP);
+        else if (view.equals("folders")) refreshFolders(true);
+        else refreshFolderGrid(GridView.TOP);
         updateTop();
     }
 }

@@ -51,6 +51,34 @@ public class Pager extends ViewGroup {
         return page;
     }
 
+    View current() {
+        return page < getChildCount() ? getChildAt(page) : null;
+    }
+
+    /**
+     * Replace the pages (albums come and go), staying on the page that was
+     * showing if it is still there.
+     */
+    void setPages(View... pages) {
+        View cur = current();
+        if (anim != null) anim.cancel();
+        removeAllViews();
+        int keep = 0;
+        for (int i = 0; i < pages.length; i++) {
+            addView(pages[i]);
+            if (pages[i] == cur) keep = i;
+        }
+        page = keep;
+        pos = keep;
+        place();
+        if (listener != null) listener.onPageSelected(page);
+    }
+
+    int indexOf(View v) {
+        for (int i = 0; i < getChildCount(); i++) if (getChildAt(i) == v) return i;
+        return -1;
+    }
+
     @Override
     protected void onMeasure(int wSpec, int hSpec) {
         int w = MeasureSpec.getSize(wSpec), h = MeasureSpec.getSize(hSpec);
