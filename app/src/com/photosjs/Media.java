@@ -147,10 +147,11 @@ final class Media {
         });
     }
 
-    static List<Item> filter(List<Item> all, boolean videos, long bucket) {
+    static List<Item> filter(List<Item> all, boolean videos, long bucket, java.util.Set<Long> hidden) {
         List<Item> out = new ArrayList<>(all.size());
         for (Item it : all) {
             if (!videos && it.video) continue;
+            if (hidden != null && hidden.contains(it.key())) continue;
             if (bucket != 0 && it.bucket != bucket) continue;
             out.add(it);
         }

@@ -2,6 +2,8 @@ package com.photosjs;
 
 import android.Manifest;
 import android.app.Activity;
+import android.app.PendingIntent;
+import android.app.WallpaperManager;
 import android.content.ActivityNotFoundException;
 import android.content.ClipData;
 import android.content.ClipboardManager;
@@ -10,6 +12,7 @@ import android.content.pm.PackageManager;
 import android.database.ContentObserver;
 import android.graphics.Bitmap;
 import android.graphics.Rect;
+import android.graphics.RectF;
 import android.net.Uri;
 import android.os.Build;
 import android.os.Bundle;
@@ -17,7 +20,6 @@ import android.os.Handler;
 import android.os.Looper;
 import android.provider.MediaStore;
 import android.provider.Settings;
-import android.view.Gravity;
 import android.view.MotionEvent;
 import android.view.PixelCopy;
 import android.view.View;
@@ -27,39 +29,56 @@ import android.widget.FrameLayout;
 import android.widget.ImageView;
 import android.widget.LinearLayout;
 
+import java.io.InputStream;
+import java.text.SimpleDateFormat;
 import java.util.ArrayList;
+import java.util.Date;
+import java.util.HashMap;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Locale;
+import java.util.Map;
+import java.util.Set;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 
 public class MainActivity extends Activity implements GridView.Listener, FolderView.Listener,
-        BarView.Listener, Thumbs.Listener, Pager.Listener {
+        BarView.Listener, Thumbs.Listener, Pager.Listener, FanView.Listener, AlbumSheet.Listener {
 
-    private static final int REQ_MEDIA = 1;
+    private static final int REQ_MEDIA = 1, REQ_TRASH = 2, REQ_UNTRASH = 3;
     private static final int TAB_PHOTOS = BarView.P_PHOTOS, TAB_FOLDERS = BarView.P_BOARDS,
             TAB_ALBUMS = BarView.P_ALBUMS, TAB_SETTINGS = BarView.P_SETTINGS;
 
     private Theme t;
     private Thumbs thumbs;
-    private FrameLayout root, content, boards;
+    private Store store;
+    private FrameLayout root, content, boards, albumsBox;
     private TopLine top;
     private BarView bar;
     private Pager pager;
-    private GridView photos, folderGrid;
-    private FolderView folderView;
-    private AlbumsPage albums;
+    private GridView photos, folderGrid, albumGrid, hiddenGrid;
+    private FolderView folderView, albumBoards;
     private SettingsPage settings;
-    private boolean hasAlbums;
+    private FanView fan;
+    private AlbumSheet sheet;
     private float dp;
 
     private final ExecutorService io = Executors.newSingleThreadExecutor();
     private final Handler main = new Handler(Looper.getMainLooper());
     private List<Media.Item> all = new ArrayList<>();
-    private boolean loadedOnce, asked;
+    private final Map<Long, Media.Item> byKey = new HashMap<>();
+    private Set<Long> hiddenKeys = new HashSet<>();
+    private List<Store.Album> albums = new ArrayList<>();
+    private boolean loadedOnce, asked, hasAlbums, hiddenOpen;
     private int tab = TAB_PHOTOS;
-    private Media.Folder openFolder;
-    private int photoCount, folderCount, folderItemCount;
+    private Media.Folder openFolder, openAlbum;
+    private int photoCount, folderCount, folderItemCount, albumItemCount;
+
+    // what the fan / sheet is about
+    private List<Media.Item> pending = new ArrayList<>();
+    private Media.Folder holdBoard;
+    private boolean renaming;
+    private List<Media.Item> trashing = new ArrayList<>();
 
     @Override
     protected void onCreate(Bundle saved) {
@@ -67,6 +86,7 @@ public class MainActivity extends Activity implements GridView.Listener, FolderV
         L.catchCrashes(this);
         Motion.load(this);
         t = Theme.get(this);
+        store = new Store(this);
         thumbs = new Thumbs(getContentResolver());
         thumbs.addListener(this);
         dp = getResources().getDisplayMetrics().density;
@@ -78,10 +98,8 @@ public class MainActivity extends Activity implements GridView.Listener, FolderV
 
         top = new TopLine(this);
         column.addView(top, new LinearLayout.LayoutParams(-1, Math.round(27 * dp)));
-
         content = new FrameLayout(this);
         column.addView(content, new LinearLayout.LayoutParams(-1, 0, 1f));
-
         bar = new BarView(this);
         bar.setListener(this);
         column.addView(bar, new LinearLayout.LayoutParams(-1, Math.round(46 * dp)));
@@ -90,10 +108,7 @@ public class MainActivity extends Activity implements GridView.Listener, FolderV
         pager.setListener(this);
         content.addView(pager, new FrameLayout.LayoutParams(-1, -1));
 
-        photos = new GridView(this);
-        photos.setThumbs(thumbs);
-        photos.setListener(this);
-        pager.addView(photos);
+        photos = grid();
 
         boards = new FrameLayout(this);
         folderView = new FolderView(this);
@@ -101,24 +116,46 @@ public class MainActivity extends Activity implements GridView.Listener, FolderV
         folderView.setListener(this);
         folderView.setColumns(L.getInt(this, "fcols", 2));
         boards.addView(folderView, new FrameLayout.LayoutParams(-1, -1));
-        folderGrid = new GridView(this);
-        folderGrid.setThumbs(thumbs);
-        folderGrid.setListener(this);
+        folderGrid = grid();
         folderGrid.setVisibility(View.GONE);
         boards.addView(folderGrid, new FrameLayout.LayoutParams(-1, -1));
-        pager.addView(boards);
 
-        albums = new AlbumsPage(this);
+        albumsBox = new FrameLayout(this);
+        albumBoards = new FolderView(this);
+        albumBoards.setThumbs(thumbs);
+        albumBoards.setListener(this);
+        albumBoards.setHoldable(true);
+        albumBoards.setColumns(L.getInt(this, "acols", 2));
+        albumBoards.setEmptyText("no albums yet");
+        albumsBox.addView(albumBoards, new FrameLayout.LayoutParams(-1, -1));
+        albumGrid = grid();
+        albumGrid.setVisibility(View.GONE);
+        albumsBox.addView(albumGrid, new FrameLayout.LayoutParams(-1, -1));
+
         settings = new SettingsPage(this);
-        setPages();
+
+        hiddenGrid = grid();
+        hiddenGrid.setVisibility(View.GONE);
+        content.addView(hiddenGrid, new FrameLayout.LayoutParams(-1, -1));
+
+        sheet = new AlbumSheet(this);
+        sheet.setListener(this);
+        content.addView(sheet, new FrameLayout.LayoutParams(-1, -1));
+
+        fan = new FanView(this);
+        fan.setListener(this);
+        root.addView(fan, new FrameLayout.LayoutParams(-1, -1));
 
         setContentView(root);
+        loadAlbums();
+        hasAlbums = !albums.isEmpty();
+        setPages();
         applyTheme();
         applyLook(false);
-        settings.setRows(rows());
-        photos.setPinterestUpTo(pinterest());
-        folderGrid.setPinterestUpTo(pinterest());
+        int p = pinterest();
+        for (GridView g : grids()) g.setPinterestUpTo(p);
         photos.setColumns(colsOf("all"));
+        settings.setRows(rows());
         top.set("photos", "");
 
         getContentResolver().registerContentObserver(MediaStore.Images.Media.EXTERNAL_CONTENT_URI,
@@ -126,11 +163,19 @@ public class MainActivity extends Activity implements GridView.Listener, FolderV
         getContentResolver().registerContentObserver(MediaStore.Video.Media.EXTERNAL_CONTENT_URI,
                 true, observer);
 
-        if (hasMedia()) {
-            load();
-        } else {
-            askMedia();
-        }
+        if (hasMedia()) load();
+        else askMedia();
+    }
+
+    private GridView grid() {
+        GridView g = new GridView(this);
+        g.setThumbs(thumbs);
+        g.setListener(this);
+        return g;
+    }
+
+    private GridView[] grids() {
+        return new GridView[] {photos, folderGrid, albumGrid, hiddenGrid};
     }
 
     @Override
@@ -148,11 +193,12 @@ public class MainActivity extends Activity implements GridView.Listener, FolderV
         root.setBackgroundColor(t.bg);
         top.setTheme(t);
         bar.setTheme(t);
-        photos.setTheme(t);
-        folderGrid.setTheme(t);
+        for (GridView g : grids()) g.setTheme(t);
         folderView.setTheme(t);
-        albums.setTheme(t);
+        albumBoards.setTheme(t);
         settings.setTheme(t);
+        fan.setTheme(t);
+        sheet.setLook(t, L.rounded(this), L.textScale(this));
     }
 
     private void applyLook(boolean relayoutBars) {
@@ -160,14 +206,15 @@ public class MainActivity extends Activity implements GridView.Listener, FolderV
         boolean nums = L.dateNumbers(this);
         float s = L.textScale(this);
         int dates = L.dates(this);
-        photos.setLook(rounded, airy, dates, nums, blocks, s);
-        folderGrid.setLook(rounded, airy, dates, nums, blocks, s);
+        for (GridView g : grids()) g.setLook(rounded, airy, dates, nums, blocks, s);
         folderView.setLook(rounded, airy, s);
+        albumBoards.setLook(rounded, airy, s);
         bar.setLook(rounded, blocks, s);
         settings.setLook(blocks, s);
+        fan.setRounded(rounded);
+        sheet.setLook(t, rounded, s);
         top.setTextScale(s);
         top.setBlocks(blocks);
-        albums.setTextScale(s);
         LinearLayout.LayoutParams tl = (LinearLayout.LayoutParams) top.getLayoutParams();
         tl.height = Math.round(27 * dp * s);
         LinearLayout.LayoutParams bl = (LinearLayout.LayoutParams) bar.getLayoutParams();
@@ -201,16 +248,12 @@ public class MainActivity extends Activity implements GridView.Listener, FolderV
         PixelCopy.request(getWindow(), area, snap, new PixelCopy.OnPixelCopyFinishedListener() {
             @Override
             public void onPixelCopyFinished(int result) {
-                if (result != PixelCopy.SUCCESS) {
-                    t = next;
-                    applyTheme();
-                    return;
-                }
+                t = next;
+                applyTheme();
+                if (result != PixelCopy.SUCCESS) return;
                 final ImageView over = new ImageView(MainActivity.this);
                 over.setImageBitmap(snap);
                 root.addView(over, new FrameLayout.LayoutParams(-1, -1));
-                t = next;
-                applyTheme();
                 over.animate().alpha(0f).setDuration(Motion.ms(450))
                         .setInterpolator(new DecelerateInterpolator())
                         .withEndAction(new Runnable() {
@@ -264,6 +307,7 @@ public class MainActivity extends Activity implements GridView.Listener, FolderV
     protected void onResume() {
         super.onResume();
         if (!loadedOnce && hasMedia()) load();
+        if (tab == TAB_SETTINGS) settings.setRows(rows());
     }
 
     private final Runnable reload = new Runnable() {
@@ -286,32 +330,53 @@ public class MainActivity extends Activity implements GridView.Listener, FolderV
             @Override
             public void run() {
                 final List<Media.Item> list = Media.load(getContentResolver());
+                final Set<Long> hid = store.hidden();
+                final List<Store.Album> al = store.albums();
                 main.post(new Runnable() {
                     @Override
                     public void run() {
                         boolean first = !loadedOnce;
                         loadedOnce = true;
                         all = list;
+                        byKey.clear();
+                        for (Media.Item it : all) byKey.put(it.key(), it);
+                        hiddenKeys = hid;
+                        albums = al;
                         thumbs.clearFailures();
-                        top.clearMessage();
+                        if (first) top.clearMessage();
                         refreshAll(first ? GridView.TOP : GridView.KEEP);
                         if (all.isEmpty()) top.message("no photos here yet", 600000, 0);
+                        else if (first) firstHint();
                     }
                 });
             }
         });
     }
 
-    // ---- views ----
+    /** One dim line about the gestures that matter, until they have been used. */
+    private void firstHint() {
+        if (L.getInt(this, "used_pinch", 0) == 1 && L.getInt(this, "used_hold", 0) == 1) return;
+        top.message("pinch to resize · hold a photo for more · swipe for pages", 6000, 0);
+    }
+
+    // ---- views and data ----
+
+    private void loadAlbums() {
+        albums = store.albums();
+    }
 
     private String viewKey() {
+        if (hiddenOpen) return "hidden";
         if (tab == TAB_FOLDERS) return openFolder == null ? "folders" : "f:" + openFolder.bucket;
+        if (tab == TAB_ALBUMS) return openAlbum == null ? "albums" : "a:" + openAlbum.bucket;
         return "all";
     }
 
-    /** sorting is set for three kinds of view: the feed, the boards, and every folder's feed */
+    /** sorting is set per kind of view: feed, boards, folder feeds, albums, album feeds */
     private static String sortKey(String view) {
-        return view.startsWith("f:") ? "folderfeeds" : view;
+        if (view.startsWith("f:")) return "folderfeeds";
+        if (view.startsWith("a:")) return "albumfeeds";
+        return view;
     }
 
     private int sortOf(String view) {
@@ -342,19 +407,22 @@ public class MainActivity extends Activity implements GridView.Listener, FolderV
         return Math.max(0, Math.min(5, L.getInt(this, "pinterest", 3)));
     }
 
-    private void refreshAll(int how) {
-        refreshPhotos(how);
-        refreshFolders(false);
-        if (openFolder != null) refreshFolderGrid(how);
-        updateTop();
-    }
-
     private static boolean dated(int by) {
         return by == Media.BY_TAKEN || by == Media.BY_MODIFIED;
     }
 
+    private void refreshAll(int how) {
+        refreshPhotos(how);
+        refreshFolders(false);
+        if (openFolder != null) refreshFolderGrid(how);
+        refreshAlbums(false);
+        if (openAlbum != null) refreshAlbumGrid(how);
+        if (hiddenOpen) refreshHidden(how);
+        updateTop();
+    }
+
     private void refreshPhotos(int how) {
-        List<Media.Item> list = Media.filter(all, videos(), 0);
+        List<Media.Item> list = Media.filter(all, videos(), 0, hiddenKeys);
         int by = sortOf("all");
         Media.sort(list, by, descOf("all"));
         photos.setItems(list, dated(by), by == Media.BY_MODIFIED, how);
@@ -362,27 +430,92 @@ public class MainActivity extends Activity implements GridView.Listener, FolderV
     }
 
     private void refreshFolders(boolean toTop) {
-        List<Media.Item> list = Media.filter(all, videos(), 0);
+        List<Media.Item> list = Media.filter(all, videos(), 0, hiddenKeys);
         Media.sort(list, Media.BY_TAKEN, true);   // collages: each folder's newest photos
         List<Media.Folder> fs = Media.folders(list);
         Media.sortFolders(fs, sortOf("folders"), descOf("folders"));
         folderView.setFolders(fs, sizes(), toTop);
         folderCount = fs.size();
         if (openFolder != null) {
-            Media.Folder still = null;
-            for (Media.Folder f : fs) if (f.bucket == openFolder.bucket) still = f;
-            if (still != null) openFolder = still;
+            for (Media.Folder f : fs) if (f.bucket == openFolder.bucket) openFolder = f;
         }
     }
 
     private void refreshFolderGrid(int how) {
         if (openFolder == null) return;
         String key = "f:" + openFolder.bucket;
-        List<Media.Item> list = Media.filter(all, videos(), openFolder.bucket);
+        List<Media.Item> list = Media.filter(all, videos(), openFolder.bucket, hiddenKeys);
         int by = sortOf(key);
         Media.sort(list, by, descOf(key));
         folderGrid.setItems(list, dated(by), by == Media.BY_MODIFIED, how);
         folderItemCount = list.size();
+    }
+
+    /** the photos of an album that still exist and aren't hidden, newest added first */
+    private List<Media.Item> albumItems(Store.Album a) {
+        List<Media.Item> out = new ArrayList<>();
+        for (long k : a.keys) {
+            Media.Item it = byKey.get(k);
+            if (it == null || hiddenKeys.contains(k)) continue;
+            if (!videos() && it.video) continue;
+            out.add(it);
+        }
+        return out;
+    }
+
+    private Store.Album album(long id) {
+        for (Store.Album a : albums) if (a.id == id) return a;
+        return null;
+    }
+
+    private void refreshAlbums(boolean toTop) {
+        List<Media.Folder> boardsList = new ArrayList<>();
+        for (Store.Album a : albums) {
+            Media.Folder f = new Media.Folder();
+            f.bucket = a.id;
+            f.name = a.name;
+            f.newestTaken = a.created;
+            f.newestModified = a.created;
+            for (Media.Item it : albumItems(a)) {
+                f.count++;
+                f.size += it.size;
+                if (f.covers.size() < 3) f.covers.add(it);
+                if (f.cover == null) f.cover = it;
+            }
+            boardsList.add(f);
+        }
+        Media.sortFolders(boardsList, sortOf("albums"), descOf("albums"));
+        albumBoards.setFolders(boardsList, sizes(), toTop);
+        if (openAlbum != null) {
+            Media.Folder still = null;
+            for (Media.Folder f : boardsList) if (f.bucket == openAlbum.bucket) still = f;
+            if (still == null) closeAlbum();
+            else openAlbum = still;
+        }
+        boolean has = !albums.isEmpty();
+        if (has != hasAlbums) {
+            hasAlbums = has;
+            setPages();
+        }
+    }
+
+    private void refreshAlbumGrid(int how) {
+        if (openAlbum == null) return;
+        Store.Album a = album(openAlbum.bucket);
+        if (a == null) return;
+        String key = "a:" + a.id;
+        List<Media.Item> list = albumItems(a);
+        int by = sortOf(key);
+        Media.sort(list, by, descOf(key));
+        albumGrid.setItems(list, dated(by), by == Media.BY_MODIFIED, how);
+        albumItemCount = list.size();
+    }
+
+    private void refreshHidden(int how) {
+        List<Media.Item> list = new ArrayList<>();
+        for (Media.Item it : all) if (hiddenKeys.contains(it.key())) list.add(it);
+        Media.sort(list, Media.BY_TAKEN, true);
+        hiddenGrid.setItems(list, true, false, how);
     }
 
     private static String count(int n) {
@@ -390,48 +523,60 @@ public class MainActivity extends Activity implements GridView.Listener, FolderV
     }
 
     private void updateTop() {
-        if (tab == TAB_PHOTOS) {
+        if (hiddenOpen) {
+            top.set("hidden", count(hiddenGrid.items().size()));
+        } else if (tab == TAB_PHOTOS) {
             top.set("photos", loadedOnce ? count(photoCount) : "");
-        } else if (tab == TAB_ALBUMS) {
-            top.set("albums", "");
         } else if (tab == TAB_SETTINGS) {
             top.set("settings", "");
+        } else if (tab == TAB_ALBUMS) {
+            if (openAlbum == null) top.set("albums", count(albums.size()));
+            else top.set(openAlbum.name, count(albumItemCount));
         } else if (openFolder == null) {
-            top.set("folders", count(folderCount));
+            top.set("boards", count(folderCount));
         } else {
             top.set(openFolder.name, count(folderItemCount));
         }
     }
 
-    private View currentView() {
-        if (tab == TAB_PHOTOS) return photos;
-        if (tab == TAB_ALBUMS) return albums;
-        if (tab == TAB_SETTINGS) return settings;
-        return openFolder == null ? folderView : folderGrid;
-    }
-
     /** photos, boards, albums (only once there is one), settings */
     private void setPages() {
         bar.setHasAlbums(hasAlbums);
-        if (hasAlbums) pager.setPages(photos, boards, albums, settings);
+        if (hasAlbums) pager.setPages(photos, boards, albumsBox, settings);
         else pager.setPages(photos, boards, settings);
     }
 
     private int logical(int pagerIndex) {
         View v = pagerIndex < pager.getChildCount() ? pager.getChildAt(pagerIndex) : null;
         if (v == boards) return TAB_FOLDERS;
-        if (v == albums) return TAB_ALBUMS;
+        if (v == albumsBox) return TAB_ALBUMS;
         if (v == settings) return TAB_SETTINGS;
         return TAB_PHOTOS;
     }
 
-    private View pageView(int logical) {
-        switch (logical) {
+    private View pageView(int lg) {
+        switch (lg) {
             case TAB_FOLDERS: return boards;
-            case TAB_ALBUMS: return albums;
+            case TAB_ALBUMS: return albumsBox;
             case TAB_SETTINGS: return settings;
             default: return photos;
         }
+    }
+
+    private View currentView() {
+        if (hiddenOpen) return hiddenGrid;
+        switch (tab) {
+            case TAB_FOLDERS: return openFolder == null ? folderView : folderGrid;
+            case TAB_ALBUMS: return openAlbum == null ? albumBoards : albumGrid;
+            case TAB_SETTINGS: return settings;
+            default: return photos;
+        }
+    }
+
+    /** the feed on screen, if there is one */
+    private GridView activeGrid() {
+        View v = currentView();
+        return v instanceof GridView ? (GridView) v : null;
     }
 
     private void crossfade(final View out, View in) {
@@ -474,24 +619,412 @@ public class MainActivity extends Activity implements GridView.Listener, FolderV
 
     @Override
     public void onPage(int lg) {
+        if (hiddenOpen) closeHidden();
         if (lg == tab) {
             if (lg == TAB_FOLDERS && openFolder != null) closeFolder();
+            if (lg == TAB_ALBUMS && openAlbum != null) closeAlbum();
             return;
         }
         int i = pager.indexOf(pageView(lg));
         if (i >= 0) pager.setPage(i, true);
     }
 
+    // ---- selecting ----
+
+    private String[] actionsFor(GridView g) {
+        if (g == hiddenGrid) return new String[] {"unhide", "trash"};
+        if (g == albumGrid) return new String[] {"album", "remove", "share", "hide", "trash"};
+        return new String[] {"album", "share", "hide", "trash"};
+    }
+
     @Override
     public void onSelectToggle() {
-        top.message("selecting comes in the next build");
+        GridView g = activeGrid();
+        if (g == null) {
+            top.message("selecting works in a feed of photos");
+            return;
+        }
+        if (g.selecting()) {
+            if (g == hiddenGrid) closeHidden();
+            else exitSelect();
+            return;
+        }
+        g.setSelecting(true);
+        pager.setLocked(true);
+        bar.setSelecting(true, 0, actionsFor(g));
+        int shown = L.getInt(this, "hint_select", 0);
+        if (shown < 3) {
+            L.putInt(this, "hint_select", shown + 1);
+            top.message("tap photos, or drag sideways across them", 4000, 0);
+        }
+    }
+
+    private void exitSelect() {
+        for (GridView g : grids()) g.setSelecting(false);
+        if (!hiddenOpen) pager.setLocked(false);
+        bar.setSelecting(false, 0, null);
+    }
+
+    @Override
+    public void onSelectionChanged(GridView from, int n) {
+        if (from.selecting()) bar.setSelecting(true, n, actionsFor(from));
     }
 
     @Override
     public void onSelectAction(int action) {
+        GridView g = activeGrid();
+        if (g == null) return;
+        List<Media.Item> sel = g.selectedItems();
+        if (sel.isEmpty()) return;
+        String a = actionsFor(g)[action];
+        switch (a) {
+            case "album": chooseAlbum(sel); break;
+            case "remove": removeFromAlbum(sel); break;
+            case "share": share(sel); break;
+            case "hide": hide(sel); break;
+            case "unhide": unhide(sel); break;
+            case "trash": trash(sel); break;
+        }
+        if (a.equals("album")) return;
+        if (g == hiddenGrid) {
+            // stay in the hidden photos, ready for more
+            g.setSelecting(false);
+            g.setSelecting(true);
+            bar.setSelecting(true, 0, actionsFor(g));
+        } else {
+            exitSelect();
+        }
     }
 
-    // ---- grid and folders ----
+    // ---- the long-press fan ----
+
+    private int[] fanActions() {
+        int[] def = {FanView.ALBUM, FanView.WALLPAPER, FanView.EDIT, FanView.NONE};
+        int[] out = new int[4];
+        for (int i = 0; i < 4; i++) out[i] = L.getInt(this, "fan" + i, def[i]);
+        return out;
+    }
+
+    @Override
+    public void onHoldStart(GridView from, Media.Item it, RectF screen, Bitmap bm, float radius,
+                            float x, float y) {
+        L.putInt(this, "used_hold", 1);
+        holdBoard = null;
+        pending = new ArrayList<>();
+        pending.add(it);
+        int[] acts = from == hiddenGrid ? new int[] {FanView.HIDE, FanView.DELETE, FanView.INFO} : fanActions();
+        fan.open(screen, bm, radius, x, y, acts, false);
+    }
+
+    @Override
+    public void onBoardHold(FolderView from, Media.Folder f, RectF screen, float radius, float x, float y) {
+        holdBoard = f;
+        pending = new ArrayList<>();
+        Bitmap bm = f.cover != null ? thumbs.best(f.cover, 1) : null;
+        fan.open(screen, bm, radius, x, y, new int[] {FanView.RENAME, FanView.DROP_ALBUM}, false);
+    }
+
+    @Override
+    public void onHoldMove(float x, float y) {
+        fan.move(x, y);
+    }
+
+    @Override
+    public void onHoldEnd(float x, float y, boolean cancel) {
+        fan.release(x, y, cancel);
+    }
+
+    @Override
+    public void onFanHover(int action) {
+        if (action == FanView.NONE) top.clearMessage();
+        else top.message(action == FanView.HIDE && hiddenOpen ? "unhide" : FanView.name(action), 60000, t.text);
+    }
+
+    @Override
+    public void onFanCancel() {
+        top.clearMessage();
+    }
+
+    @Override
+    public void onFanPick(int action) {
+        top.clearMessage();
+        if (action == FanView.WALLPAPER) {
+            fan.reopen(new int[] {FanView.W_HOME, FanView.W_LOCKJS});
+            top.message("where should it go?", 60000, 0);
+            return;
+        }
+        fan.close();
+        List<Media.Item> items = pending;
+        switch (action) {
+            case FanView.ALBUM: chooseAlbum(items); break;
+            case FanView.EDIT: top.message("the editor comes in a later build"); break;
+            case FanView.SHARE: share(items); break;
+            case FanView.HIDE:
+                if (hiddenOpen) unhide(items);
+                else hide(items);
+                break;
+            case FanView.DELETE: trash(items); break;
+            case FanView.INFO: if (!items.isEmpty()) info(items.get(0)); break;
+            case FanView.W_HOME: if (!items.isEmpty()) homeWallpaper(items.get(0)); break;
+            case FanView.W_LOCKJS: if (!items.isEmpty()) toLockJS(items.get(0)); break;
+            case FanView.RENAME:
+                if (holdBoard != null) {
+                    renaming = true;
+                    sheet.showName("rename the album", holdBoard.name);
+                }
+                break;
+            case FanView.DROP_ALBUM: if (holdBoard != null) dropAlbum(holdBoard.bucket); break;
+        }
+    }
+
+    // ---- actions ----
+
+    private static List<Long> keys(List<Media.Item> items) {
+        List<Long> out = new ArrayList<>();
+        for (Media.Item it : items) out.add(it.key());
+        return out;
+    }
+
+    private static String photosWord(int n) {
+        return n == 1 ? "1 photo" : n + " photos";
+    }
+
+    private void chooseAlbum(List<Media.Item> items) {
+        pending = new ArrayList<>(items);
+        renaming = false;
+        List<Integer> counts = new ArrayList<>();
+        for (Store.Album a : albums) counts.add(albumItems(a).size());
+        sheet.showChooser("add " + photosWord(items.size()) + " to", albums, counts);
+    }
+
+    @Override
+    public void onAlbumChosen(long id) {
+        final List<Long> ks = keys(pending);
+        int added = store.addToAlbum(id, ks);
+        Store.Album a = album(id);
+        afterAlbumsChanged();
+        exitSelect();
+        top.message(added == 0 ? "already there" : photosWord(added) + " added to " + (a != null ? a.name : "the album"));
+    }
+
+    @Override
+    public void onNameGiven(String name) {
+        if (renaming && holdBoard != null) {
+            store.renameAlbum(holdBoard.bucket, name);
+            renaming = false;
+            afterAlbumsChanged();
+            return;
+        }
+        long id = store.createAlbum(name);
+        if (!pending.isEmpty()) store.addToAlbum(id, keys(pending));
+        afterAlbumsChanged();
+        exitSelect();
+        top.message(pending.isEmpty() ? "album made" : photosWord(pending.size()) + " in the new album " + name);
+    }
+
+    @Override
+    public void onSheetClosed() {
+        renaming = false;
+    }
+
+    private void afterAlbumsChanged() {
+        albums = store.albums();
+        refreshAlbums(false);
+        if (openAlbum != null) refreshAlbumGrid(GridView.MORPH);
+        updateTop();
+    }
+
+    private void removeFromAlbum(List<Media.Item> items) {
+        if (openAlbum == null) return;
+        final long id = openAlbum.bucket;
+        final List<Long> ks = keys(items);
+        store.removeFromAlbum(id, ks);
+        afterAlbumsChanged();
+        top.message(photosWord(ks.size()) + " out of the album · tap to undo", 5000, 0, new Runnable() {
+            @Override
+            public void run() {
+                store.addToAlbum(id, ks);
+                afterAlbumsChanged();
+            }
+        });
+    }
+
+    private void dropAlbum(long id) {
+        final Store.Album gone = store.deleteAlbum(id);
+        if (openAlbum != null && openAlbum.bucket == id) closeAlbum();
+        afterAlbumsChanged();
+        if (gone == null) return;
+        top.message("album " + gone.name + " deleted, photos kept · tap to undo", 6000, 0, new Runnable() {
+            @Override
+            public void run() {
+                store.restoreAlbum(gone);
+                afterAlbumsChanged();
+            }
+        });
+    }
+
+    private void hide(List<Media.Item> items) {
+        final List<Long> ks = keys(items);
+        store.hide(ks);
+        hiddenKeys.addAll(ks);
+        refreshAfterHiding();
+        top.message(photosWord(ks.size()) + " hidden · tap to undo", 5000, 0, new Runnable() {
+            @Override
+            public void run() {
+                store.unhide(ks);
+                hiddenKeys.removeAll(ks);
+                refreshAfterHiding();
+            }
+        });
+    }
+
+    private void unhide(List<Media.Item> items) {
+        final List<Long> ks = keys(items);
+        store.unhide(ks);
+        hiddenKeys.removeAll(ks);
+        refreshAfterHiding();
+        top.message(photosWord(ks.size()) + " back in the feed · tap to undo", 5000, 0, new Runnable() {
+            @Override
+            public void run() {
+                store.hide(ks);
+                hiddenKeys.addAll(ks);
+                refreshAfterHiding();
+            }
+        });
+    }
+
+    private void refreshAfterHiding() {
+        refreshPhotos(GridView.MORPH);
+        refreshFolders(false);
+        refreshFolderGrid(GridView.MORPH);
+        refreshAlbums(false);
+        refreshAlbumGrid(GridView.MORPH);
+        if (hiddenOpen) refreshHidden(GridView.MORPH);
+        updateTop();
+    }
+
+    private void share(List<Media.Item> items) {
+        if (items.isEmpty()) return;
+        Intent send;
+        boolean allImages = true;
+        for (Media.Item it : items) if (it.video) allImages = false;
+        if (items.size() == 1) {
+            Media.Item it = items.get(0);
+            send = new Intent(Intent.ACTION_SEND).setType(it.mime.isEmpty() ? (it.video ? "video/*" : "image/*") : it.mime)
+                    .putExtra(Intent.EXTRA_STREAM, it.uri());
+            send.setClipData(ClipData.newRawUri("", it.uri()));
+        } else {
+            ArrayList<Uri> uris = new ArrayList<>();
+            for (Media.Item it : items) uris.add(it.uri());
+            send = new Intent(Intent.ACTION_SEND_MULTIPLE).setType(allImages ? "image/*" : "*/*")
+                    .putParcelableArrayListExtra(Intent.EXTRA_STREAM, uris);
+            ClipData clip = ClipData.newRawUri("", uris.get(0));
+            for (int i = 1; i < uris.size(); i++) clip.addItem(new ClipData.Item(uris.get(i)));
+            send.setClipData(clip);
+        }
+        send.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);
+        try {
+            startActivity(Intent.createChooser(send, null));
+        } catch (Throwable e) {
+            top.message("nothing here can take these");
+        }
+    }
+
+    /** Into Android's trash: gone from every app, back on undo, erased by Android after 30 days. */
+    private void trash(List<Media.Item> items) {
+        if (items.isEmpty()) return;
+        trashing = new ArrayList<>(items);
+        ArrayList<Uri> uris = new ArrayList<>();
+        for (Media.Item it : items) uris.add(it.uri());
+        try {
+            PendingIntent pi = MediaStore.createTrashRequest(getContentResolver(), uris, true);
+            startIntentSenderForResult(pi.getIntentSender(), REQ_TRASH, null, 0, 0, 0);
+        } catch (Throwable e) {
+            top.message("Android didn't let photosJS move these to the trash");
+        }
+    }
+
+    private void untrash(List<Media.Item> items) {
+        ArrayList<Uri> uris = new ArrayList<>();
+        for (Media.Item it : items) uris.add(it.uri());
+        try {
+            PendingIntent pi = MediaStore.createTrashRequest(getContentResolver(), uris, false);
+            startIntentSenderForResult(pi.getIntentSender(), REQ_UNTRASH, null, 0, 0, 0);
+        } catch (Throwable e) {
+            top.message("couldn't bring them back; they are in Android's trash");
+        }
+    }
+
+    @Override
+    protected void onActivityResult(int code, int result, Intent data) {
+        super.onActivityResult(code, result, data);
+        if (code == REQ_TRASH && result == RESULT_OK) {
+            final List<Media.Item> gone = trashing;
+            top.message(photosWord(gone.size()) + " moved to the trash · tap to undo", 6000, 0, new Runnable() {
+                @Override
+                public void run() {
+                    untrash(gone);
+                }
+            });
+            load();
+        } else if (code == REQ_UNTRASH && result == RESULT_OK) {
+            top.message("back from the trash");
+            load();
+        }
+    }
+
+    private void info(Media.Item it) {
+        String when = new SimpleDateFormat(L.dateNumbers(this) ? "d.M.yyyy HH:mm" : "d MMM yyyy HH:mm",
+                Locale.ENGLISH).format(new Date(it.taken)).toLowerCase(Locale.ENGLISH);
+        String dims = it.w > 0 ? it.w + "×" + it.h + " · " : "";
+        String extra = it.video ? " · " + Media.duration(it.duration) : "";
+        top.message(dims + Media.size(it.size) + " · " + when + extra + " · " + it.name, 7000, t.text);
+    }
+
+    private void homeWallpaper(final Media.Item it) {
+        try {
+            Intent crop = WallpaperManager.getInstance(this).getCropAndSetWallpaperIntent(it.uri());
+            startActivity(crop);
+            return;
+        } catch (Throwable ignored) {
+            // no crop screen here: set it as it is
+        }
+        io.execute(new Runnable() {
+            @Override
+            public void run() {
+                String msg;
+                try (InputStream in = getContentResolver().openInputStream(it.uri())) {
+                    WallpaperManager.getInstance(MainActivity.this).setStream(in, null, true,
+                            WallpaperManager.FLAG_SYSTEM);
+                    msg = "home screen wallpaper set";
+                } catch (Throwable e) {
+                    msg = "couldn't set the wallpaper";
+                }
+                final String m = msg;
+                main.post(new Runnable() {
+                    @Override
+                    public void run() {
+                        top.message(m);
+                    }
+                });
+            }
+        });
+    }
+
+    private void toLockJS(Media.Item it) {
+        Intent send = new Intent(Intent.ACTION_SEND).setPackage("com.lockjs")
+                .setType(it.mime.isEmpty() ? "image/*" : it.mime)
+                .putExtra(Intent.EXTRA_STREAM, it.uri())
+                .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);
+        send.setClipData(ClipData.newRawUri("", it.uri()));
+        try {
+            startActivity(send);
+        } catch (ActivityNotFoundException e) {
+            top.message("lockJS can't take a picture yet; it needs its next update", 5000, 0);
+        }
+    }
+
+    // ---- grid and boards ----
 
     @Override
     public void onOpen(Media.Item it) {
@@ -515,32 +1048,72 @@ public class MainActivity extends Activity implements GridView.Listener, FolderV
 
     @Override
     public void onColumnsChanged(int cols) {
+        L.putInt(this, "used_pinch", 1);
         L.putInt(this, "cols:" + viewKey(), cols);
     }
 
     @Override
     public void onBoardColumnsChanged(int cols) {
-        L.putInt(this, "fcols", cols);
+        L.putInt(this, "used_pinch", 1);
+        L.putInt(this, tab == TAB_ALBUMS ? "acols" : "fcols", cols);
     }
 
     @Override
     public void onOpenFolder(Media.Folder f) {
-        openFolder = f;
-        folderGrid.setColumns(colsOf("f:" + f.bucket));
-        refreshFolderGrid(GridView.TOP);
-        crossfade(folderView, folderGrid);
+        if (tab == TAB_ALBUMS) {
+            openAlbum = f;
+            albumGrid.setColumns(colsOf("a:" + f.bucket));
+            refreshAlbumGrid(GridView.TOP);
+            crossfade(albumBoards, albumGrid);
+        } else {
+            openFolder = f;
+            folderGrid.setColumns(colsOf("f:" + f.bucket));
+            refreshFolderGrid(GridView.TOP);
+            crossfade(folderView, folderGrid);
+        }
         updateTop();
     }
 
     private void closeFolder() {
+        exitSelect();
         openFolder = null;
         crossfade(folderGrid, folderView);
+        updateTop();
+    }
+
+    private void closeAlbum() {
+        exitSelect();
+        openAlbum = null;
+        if (albumGrid.getVisibility() == View.VISIBLE) crossfade(albumGrid, albumBoards);
+        updateTop();
+    }
+
+    private void openHidden() {
+        hiddenOpen = true;
+        refreshHidden(GridView.TOP);
+        hiddenGrid.setColumns(colsOf("hidden"));
+        hiddenGrid.setAlpha(0f);
+        hiddenGrid.setVisibility(View.VISIBLE);
+        hiddenGrid.animate().alpha(1f).setDuration(Motion.ms(220));
+        pager.setLocked(true);
+        updateTop();
+        onSelectToggle();
+    }
+
+    private void closeHidden() {
+        hiddenOpen = false;
+        exitSelect();
+        hiddenGrid.animate().cancel();
+        hiddenGrid.setVisibility(View.GONE);
+        pager.setLocked(false);
+        settings.setRows(rows());
         updateTop();
     }
 
     @Override
     public void onThumbsArrived() {
         currentView().invalidate();
+        if (fan.isOpen()) fan.invalidate();
     }
 
     @Override
@@ -551,8 +1124,20 @@ public class MainActivity extends Activity implements GridView.Listener, FolderV
 
     @Override
     public void onBackPressed() {
-        if (tab == TAB_FOLDERS && openFolder != null) {
+        GridView g = activeGrid();
+        if (fan.isOpen()) {
+            fan.close();
+            top.clearMessage();
+        } else if (sheet.isOpen()) {
+            sheet.close();
+        } else if (hiddenOpen) {
+            closeHidden();
+        } else if (g != null && g.selecting()) {
+            exitSelect();
+        } else if (tab == TAB_FOLDERS && openFolder != null) {
             closeFolder();
+        } else if (tab == TAB_ALBUMS && openAlbum != null) {
+            closeAlbum();
         } else if (tab != TAB_PHOTOS) {
             pager.setPage(0, true);
         } else {
@@ -602,10 +1187,6 @@ public class MainActivity extends Activity implements GridView.Listener, FolderV
         return v;
     }
 
-    private String sortValue(String view) {
-        return Media.SORT_NAMES[sortOf(view)];
-    }
-
     private String orderValue(String view) {
         int by = sortOf(view);
         boolean desc = descOf(view);
@@ -618,7 +1199,7 @@ public class MainActivity extends Activity implements GridView.Listener, FolderV
         r.add(new Row(what + " sorted by", "remembered") {
             @Override
             public String value() {
-                return sortValue(view);
+                return Media.SORT_NAMES[sortOf(view)];
             }
 
             @Override
@@ -639,6 +1220,17 @@ public class MainActivity extends Activity implements GridView.Listener, FolderV
                 resort(view);
             }
         });
+    }
+
+    private void resort(String view) {
+        switch (view) {
+            case "all": refreshPhotos(GridView.TOP); break;
+            case "folders": refreshFolders(true); break;
+            case "albums": refreshAlbums(true); break;
+            case "albumfeeds": refreshAlbumGrid(GridView.TOP); break;
+            default: refreshFolderGrid(GridView.TOP);
+        }
+        updateTop();
     }
 
     private List<SettingsPage.Row> rows() {
@@ -728,8 +1320,7 @@ public class MainActivity extends Activity implements GridView.Listener, FolderV
             public void step(int d) {
                 int p = (pinterest() + d + 6) % 6;
                 L.putInt(MainActivity.this, "pinterest", p);
-                photos.setPinterestUpTo(p);
-                folderGrid.setPinterestUpTo(p);
+                for (GridView g : grids()) g.setPinterestUpTo(p);
             }
         });
         r.add(new Row("dates", "labels between photos when sorted by date") {
@@ -765,12 +1356,10 @@ public class MainActivity extends Activity implements GridView.Listener, FolderV
             @Override
             public void step(int d) {
                 L.putInt(MainActivity.this, "videos", videos() ? 0 : 1);
-                refreshPhotos(GridView.MORPH);
-                refreshFolders(false);
-                refreshFolderGrid(GridView.MORPH);
+                refreshAfterHiding();
             }
         });
-        r.add(new Row("folders open with", "columns, until you pinch them") {
+        r.add(new Row("new feeds open with", "columns, until you pinch them") {
             @Override
             public String value() {
                 int c = defCols();
@@ -787,13 +1376,41 @@ public class MainActivity extends Activity implements GridView.Listener, FolderV
             }
         });
 
+        r.add(new Head("long press"));
+        final int[] fanDef = {FanView.ALBUM, FanView.WALLPAPER, FanView.EDIT, FanView.NONE};
+        final int[] choices = new int[FanView.PHOTO_ACTIONS.length + 1];
+        choices[0] = FanView.NONE;
+        System.arraycopy(FanView.PHOTO_ACTIONS, 0, choices, 1, FanView.PHOTO_ACTIONS.length);
+        for (int i = 0; i < 4; i++) {
+            final int slot = i;
+            r.add(new Row("fan " + (i + 1), i == 0 ? "what blooms around your thumb" : "") {
+                @Override
+                public String value() {
+                    return FanView.shortName(L.getInt(MainActivity.this, "fan" + slot, fanDef[slot]));
+                }
+
+                @Override
+                public void step(int d) {
+                    int cur = L.getInt(MainActivity.this, "fan" + slot, fanDef[slot]);
+                    int idx = 0;
+                    for (int k = 0; k < choices.length; k++) if (choices[k] == cur) idx = k;
+                    idx = (idx + d + choices.length) % choices.length;
+                    L.putInt(MainActivity.this, "fan" + slot, choices[idx]);
+                }
+            });
+        }
+
         r.add(new Head("sorting"));
         sortRows(r, "all", "photos");
         sortRows(r, "folders", "boards");
         sortRows(r, "folderfeeds", "folders");
+        if (hasAlbums) {
+            sortRows(r, "albums", "albums");
+            sortRows(r, "albumfeeds", "album photos");
+        }
 
         r.add(new Head("boards"));
-        r.add(new Row("folder sizes", "how much space each board takes") {
+        r.add(new Row("sizes", "how much space each board takes") {
             @Override
             public String value() {
                 return sizes() ? "shown" : "hidden";
@@ -803,8 +1420,42 @@ public class MainActivity extends Activity implements GridView.Listener, FolderV
             public void step(int d) {
                 L.putInt(MainActivity.this, "sizes", sizes() ? 0 : 1);
                 refreshFolders(false);
+                refreshAlbums(false);
             }
         });
+
+        r.add(new Head("hidden and trash"));
+        r.add(new Row("hidden photos", "hidden here only; other apps still see them") {
+            @Override
+            public String value() {
+                int n = 0;
+                for (Media.Item it : all) if (hiddenKeys.contains(it.key())) n++;
+                return n == 0 ? "none" : n + " · show";
+            }
+
+            @Override
+            public void step(int d) {
+                if (!hiddenKeys.isEmpty()) openHidden();
+            }
+        });
+        if (Build.VERSION.SDK_INT >= 31) {
+            r.add(new Row("trash without asking", "lets photosJS skip Android's confirm") {
+                @Override
+                public String value() {
+                    return MediaStore.canManageMedia(MainActivity.this) ? "allowed" : "Android asks";
+                }
+
+                @Override
+                public void step(int d) {
+                    try {
+                        startActivity(new Intent(Settings.ACTION_REQUEST_MANAGE_MEDIA,
+                                Uri.parse("package:" + getPackageName())));
+                    } catch (Throwable e) {
+                        top.message("this Android has no such switch");
+                    }
+                }
+            });
+        }
 
         final String crash = L.getString(this, "crash", "");
         if (!crash.isEmpty()) {
@@ -827,12 +1478,5 @@ public class MainActivity extends Activity implements GridView.Listener, FolderV
             });
         }
         return r;
-    }
-
-    private void resort(String view) {
-        if (view.equals("all")) refreshPhotos(GridView.TOP);
-        else if (view.equals("folders")) refreshFolders(true);
-        else refreshFolderGrid(GridView.TOP);
-        updateTop();
     }
 }

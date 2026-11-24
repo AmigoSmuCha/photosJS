@@ -40,6 +40,15 @@ public class GridView extends View {
         void onOpen(Media.Item it);
 
         void onColumnsChanged(int cols);
+
+        /** a long press on a photo: where it is on screen, and the finger (screen coords) */
+        void onHoldStart(GridView from, Media.Item it, RectF screen, Bitmap bm, float radius, float x, float y);
+
+        void onHoldMove(float x, float y);
+
+        void onHoldEnd(float x, float y, boolean cancel);
+
+        void onSelectionChanged(GridView from, int count);
     }
 
     static final int[] LEVELS = {1, 2, 3, 4, 5, 6, 8};
@@ -115,6 +124,21 @@ public class GridView extends View {
     private final HashMap<Long, Long> arrived = new HashMap<>();
     private boolean settling;
 
+    // selecting
+    private boolean selecting;
+    private final Set<Long> selected = new HashSet<>();
+    private final HashMap<Long, Long> selAt = new HashMap<>();
+    private int strokeState;            // 0 undecided, 1 selecting stroke, 2 scrolling
+    private int strokeAnchor = -1, strokeLast = -1;
+    private boolean strokeOn;
+    private Set<Long> strokeBase = new HashSet<>();
+    private float downX, downY, lastX, lastY;
+    private final int slop;
+    private final Paint ring = new Paint(Paint.ANTI_ALIAS_FLAG);
+
+    // holding (the long-press fan)
+    private boolean holding;
+
     // fast scroll
     private long lastScrollAt = -10000;
     private boolean dragFast;
@@ -126,6 +150,8 @@ public class GridView extends View {
         fastW = Math.round(3.5f * dp);
         fastH = Math.round(36 * dp);
         fastZone = 30 * dp;
+        slop = android.view.ViewConfiguration.get(c).getScaledTouchSlop();
+        ring.setStyle(Paint.Style.STROKE);
         label.setTypeface(L.font(c));
         small.setTypeface(L.font(c));
         applyTextScale();
@@ -158,10 +184,35 @@ public class GridView extends View {
             public boolean onSingleTapUp(MotionEvent e) {
                 if (pinchedThisTouch) return true;
                 int en = entryAt(e.getX(), e.getY());
-                if (en >= 0 && eItem[en] >= 0 && listener != null) {
-                    listener.onOpen(items.get(eItem[en]));
+                if (en < 0 || eItem[en] < 0) return true;
+                Media.Item it = items.get(eItem[en]);
+                if (selecting) {
+                    toggle(it.key());
+                    performHapticFeedback(HapticFeedbackConstants.CLOCK_TICK);
+                    if (listener != null) listener.onSelectionChanged(GridView.this, selected.size());
+                } else if (listener != null) {
+                    listener.onOpen(it);
                 }
                 return true;
+            }
+
+            @Override
+            public void onLongPress(MotionEvent e) {
+                if (selecting || pinchedThisTouch || pinching || listener == null) return;
+                int en = entryAt(e.getX(), e.getY());
+                if (en < 0 || eItem[en] < 0) return;
+                Media.Item it = items.get(eItem[en]);
+                RectF r = new RectF();
+                screenRect(en, 1f, r);
+                int[] loc = new int[2];
+                getLocationOnScreen(loc);
+                r.offset(loc[0], loc[1]);
+                Bitmap b = thumbs != null ? thumbs.best(it, bucket) : null;
+                holding = true;
+                ViewParent p = getParent();
+                if (p != null) p.requestDisallowInterceptTouchEvent(true);
+                performHapticFeedback(HapticFeedbackConstants.LONG_PRESS);
+                listener.onHoldStart(GridView.this, it, r, b, radius, e.getRawX(), e.getRawY());
             }
         });
         scaler = new ScaleGestureDetector(c, new ScaleGestureDetector.SimpleOnScaleGestureListener() {
@@ -247,6 +298,55 @@ public class GridView extends View {
         return LEVELS[level];
     }
 
+    boolean selecting() {
+        return selecting;
+    }
+
+    void setSelecting(boolean on) {
+        if (on == selecting) return;
+        selecting = on;
+        long now = SystemClock.uptimeMillis();
+        for (Long k : selected) selAt.put(k, now);
+        selected.clear();
+        invalidate();
+    }
+
+    /** the selected photos, in the feed's order */
+    List<Media.Item> selectedItems() {
+        List<Media.Item> out = new ArrayList<>();
+        for (Media.Item it : items) if (selected.contains(it.key())) out.add(it);
+        return out;
+    }
+
+    int selectedCount() {
+        return selected.size();
+    }
+
+    List<Media.Item> items() {
+        return items;
+    }
+
+    private void toggle(long key) {
+        if (!selected.remove(key)) selected.add(key);
+        selAt.put(key, SystemClock.uptimeMillis());
+        invalidate();
+    }
+
+    /** how selected a photo looks right now, 0..1 (animated) */
+    private float selAmount(long key, long now) {
+        boolean on = selected.contains(key);
+        Long at = selAt.get(key);
+        if (at == null) return on ? 1f : 0f;
+        long d = Motion.ms(220);
+        float u = d <= 0 ? 1f : (now - at) / (float) d;
+        if (u >= 1f) {
+            selAt.remove(key);
+            return on ? 1f : 0f;
+        }
+        float e = Motion.ease(u);
+        return on ? e : 1f - e;
+    }
+
     void setColumns(int cols) {
         int best = 0;
         for (int i = 0; i < LEVELS.length; i++) {
@@ -285,6 +385,13 @@ public class GridView extends View {
         items = list;
         this.dated = dated;
         this.byModified = byModified;
+        if (!selected.isEmpty()) {
+            Set<Long> present = new HashSet<>();
+            for (Media.Item it : list) present.add(it.key());
+            if (selected.retainAll(present) && listener != null) {
+                listener.onSelectionChanged(this, selected.size());
+            }
+        }
         relayout();
         if (how == TOP) {
             scrollY = 0;
@@ -689,6 +796,7 @@ public class GridView extends View {
                 again = true;
             }
         }
+        if (edgeScroll()) again = true;
         float u = morphT(now);
         if (u < 1f) again = true;
         float rad = u < 1f ? fromRadius + (radius - fromRadius) * Motion.ease(u) : radius;
@@ -777,10 +885,23 @@ public class GridView extends View {
                 c.drawRoundRect(r, rad, rad, fill);
             }
         }
+        float sel = selAmount(key, now);
+        if (sel > 0f && sel < 1f) settling = true;
         float sc = settle < 1f ? 0.96f + 0.04f * Motion.ease(settle) : 1f;
+        sc *= 1f - 0.1f * sel;
         tmp2.set(r);
         if (sc != 1f) tmp2.inset(r.width() * (1f - sc) / 2f, r.height() * (1f - sc) / 2f);
-        drawPhoto(c, b, tmp2, rad, Math.round(255 * alpha * Motion.fade(settle)));
+        drawPhoto(c, b, tmp2, rad * (1f - 0.3f * sel), Math.round(255 * alpha * Motion.fade(settle)));
+        if (sel > 0f) {
+            // the lamp colour marks what is chosen
+            float sw = 2.2f * dp;
+            ring.setStrokeWidth(sw);
+            ring.setColor(t.accent);
+            ring.setAlpha(Math.round(255 * sel * alpha));
+            tmp2.set(r);
+            tmp2.inset(sw / 2, sw / 2);
+            c.drawRoundRect(tmp2, rad, rad, ring);
+        }
 
         if (it.video && r.width() > 44 * dp) {
             String d = Media.duration(it.duration);
@@ -910,6 +1031,16 @@ public class GridView extends View {
             }
             return true;
         }
+        if (holding) {
+            if (act == MotionEvent.ACTION_MOVE) {
+                listener.onHoldMove(e.getRawX(), e.getRawY());
+            } else if (act == MotionEvent.ACTION_UP || act == MotionEvent.ACTION_CANCEL) {
+                holding = false;
+                listener.onHoldEnd(e.getRawX(), e.getRawY(), act == MotionEvent.ACTION_CANCEL);
+            }
+            return true;
+        }
+        if (selecting && strokeTouch(e)) return true;
         scaler.onTouchEvent(e);
         gestures.onTouchEvent(e);
         if (act == MotionEvent.ACTION_UP || act == MotionEvent.ACTION_CANCEL) {
@@ -919,6 +1050,138 @@ public class GridView extends View {
                 liveStart = SystemClock.uptimeMillis();
             }
             invalidate();
+        }
+        return true;
+    }
+
+    /**
+     * While selecting: a drag that starts sideways is a selecting stroke (every
+     * photo from where it started to where the finger is takes the first
+     * photo's new state); a drag that starts up or down scrolls as usual.
+     */
+    private boolean strokeTouch(MotionEvent e) {
+        int act = e.getActionMasked();
+        if (act == MotionEvent.ACTION_DOWN) {
+            strokeState = 0;
+            downX = e.getX();
+            downY = e.getY();
+            lastX = e.getX();
+            lastY = e.getY();
+            return false;
+        }
+        if (e.getPointerCount() > 1 || pinching) {
+            if (strokeState == 1) endStroke();
+            strokeState = 2;
+            return false;
+        }
+        if (act == MotionEvent.ACTION_MOVE) {
+            lastX = e.getX();
+            lastY = e.getY();
+            if (strokeState == 0) {
+                float dx = e.getX() - downX, dy = e.getY() - downY;
+                if (Math.abs(dx) > slop && Math.abs(dx) > Math.abs(dy)) {
+                    int en = nearestItemEntry(downX, downY);
+                    if (en < 0) {
+                        strokeState = 2;
+                        return false;
+                    }
+                    strokeState = 1;
+                    strokeAnchor = eItem[en];
+                    strokeOn = !selected.contains(items.get(strokeAnchor).key());
+                    strokeBase = new HashSet<>(selected);
+                    strokeLast = -1;
+                    // the detectors saw the start of this touch; tell them it is over
+                    MotionEvent cancel = MotionEvent.obtain(e);
+                    cancel.setAction(MotionEvent.ACTION_CANCEL);
+                    gestures.onTouchEvent(cancel);
+                    cancel.recycle();
+                    strokeTo(e.getX(), e.getY());
+                    return true;
+                } else if (Math.abs(dy) > slop) {
+                    strokeState = 2;
+                }
+                return false;
+            }
+            if (strokeState == 1) {
+                strokeTo(e.getX(), e.getY());
+                invalidate();   // keeps the edge scrolling going
+                return true;
+            }
+            return false;
+        }
+        if (act == MotionEvent.ACTION_UP || act == MotionEvent.ACTION_CANCEL) {
+            if (strokeState == 1) {
+                endStroke();
+                return true;
+            }
+        }
+        return strokeState == 1;
+    }
+
+    private void endStroke() {
+        strokeState = 2;
+        strokeAnchor = -1;
+        invalidate();
+    }
+
+    private int nearestItemEntry(float x, float sy) {
+        int en = entryAt(x, sy);
+        if (en >= 0 && eItem[en] >= 0) return en;
+        float y = sy + scrollY;
+        int best = -1;
+        float bd = Float.MAX_VALUE;
+        for (int g = groupAt(y - getHeight()); g < gCount && gTop[g] <= y + getHeight(); g++) {
+            for (int k = gFirst[g]; k <= gLast[g]; k++) {
+                if (eItem[k] < 0) continue;
+                float cx = ex[k] + ew[k] / 2, cy = ey[k] + eh[k] / 2;
+                float d = (cx - x) * (cx - x) + (cy - y) * (cy - y);
+                if (d < bd) {
+                    bd = d;
+                    best = k;
+                }
+            }
+        }
+        return best;
+    }
+
+    private void strokeTo(float x, float sy) {
+        int en = nearestItemEntry(x, sy);
+        if (en < 0) return;
+        int cur = eItem[en];
+        if (cur == strokeLast) return;
+        strokeLast = cur;
+        int lo = Math.min(strokeAnchor, cur), hi = Math.max(strokeAnchor, cur);
+        long now = SystemClock.uptimeMillis();
+        boolean changed = false;
+        for (int i = 0; i < items.size(); i++) {
+            long k = items.get(i).key();
+            boolean want = (i >= lo && i <= hi) ? strokeOn : strokeBase.contains(k);
+            boolean has = selected.contains(k);
+            if (want != has) {
+                if (want) selected.add(k);
+                else selected.remove(k);
+                selAt.put(k, now);
+                changed = true;
+            }
+        }
+        if (changed) {
+            performHapticFeedback(HapticFeedbackConstants.CLOCK_TICK);
+            if (listener != null) listener.onSelectionChanged(this, selected.size());
+        }
+    }
+
+    /** near the top or bottom edge during a stroke, the feed keeps moving */
+    private boolean edgeScroll() {
+        if (strokeState != 1) return false;
+        float zone = 56 * dp, v = 0;
+        if (lastY < zone) v = -(zone - lastY) / zone;
+        else if (lastY > getHeight() - zone) v = (lastY - (getHeight() - zone)) / zone;
+        if (v == 0) return false;
+        float before = scrollY;
+        scrollY = clamp(scrollY + v * 18 * dp, 0, maxScroll());
+        if (scrollY != before) {
+            strokeLast = -1;
+            strokeTo(lastX, lastY);
         }
         return true;
     }

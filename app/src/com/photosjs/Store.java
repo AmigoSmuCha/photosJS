@@ -1,0 +1,196 @@
+package com.photosjs;
+
+import android.content.ContentValues;
+import android.content.Context;
+import android.database.Cursor;
+import android.database.sqlite.SQLiteDatabase;
+import android.database.sqlite.SQLiteOpenHelper;
+
+import java.util.ArrayList;
+import java.util.HashMap;
+import java.util.HashSet;
+import java.util.List;
+import java.util.Map;
+import java.util.Set;
+
+/**
+ * photosJS's own memory: albums (collections that move or copy nothing, one
+ * photo can be in many) and hidden photos (hidden here only; the files and
+ * other apps are untouched). Photos are kept by their media key.
+ */
+final class Store extends SQLiteOpenHelper {
+    static final class Album {
+        long id;
+        String name = "";
+        long created;
+        final List<Long> keys = new ArrayList<>();   // newest added first
+    }
+
+    Store(Context c) {
+        super(c.getApplicationContext(), "photosjs.db", null, 1);
+    }
+
+    @Override
+    public void onCreate(SQLiteDatabase db) {
+        db.execSQL("CREATE TABLE albums (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL, created INTEGER NOT NULL)");
+        db.execSQL("CREATE TABLE album_items (album INTEGER NOT NULL, item INTEGER NOT NULL, added INTEGER NOT NULL, PRIMARY KEY (album, item))");
+        db.execSQL("CREATE TABLE hidden (item INTEGER PRIMARY KEY, at INTEGER NOT NULL)");
+    }
+
+    @Override
+    public void onUpgrade(SQLiteDatabase db, int from, int to) {
+    }
+
+    // ---- albums ----
+
+    List<Album> albums() {
+        Map<Long, Album> byId = new HashMap<>();
+        List<Album> out = new ArrayList<>();
+        SQLiteDatabase db = getReadableDatabase();
+        Cursor c = db.rawQuery("SELECT id, name, created FROM albums ORDER BY created DESC", null);
+        try {
+            while (c.moveToNext()) {
+                Album a = new Album();
+                a.id = c.getLong(0);
+                a.name = c.getString(1);
+                a.created = c.getLong(2);
+                byId.put(a.id, a);
+                out.add(a);
+            }
+        } finally {
+            c.close();
+        }
+        c = db.rawQuery("SELECT album, item FROM album_items ORDER BY added DESC", null);
+        try {
+            while (c.moveToNext()) {
+                Album a = byId.get(c.getLong(0));
+                if (a != null) a.keys.add(c.getLong(1));
+            }
+        } finally {
+            c.close();
+        }
+        return out;
+    }
+
+    long createAlbum(String name) {
+        ContentValues v = new ContentValues();
+        v.put("name", name);
+        v.put("created", System.currentTimeMillis());
+        return getWritableDatabase().insert("albums", null, v);
+    }
+
+    void renameAlbum(long id, String name) {
+        ContentValues v = new ContentValues();
+        v.put("name", name);
+        getWritableDatabase().update("albums", v, "id = ?", new String[] {String.valueOf(id)});
+    }
+
+    /** Removes the album (never the photos). Returns what is needed to bring it back. */
+    Album deleteAlbum(long id) {
+        Album keep = null;
+        for (Album a : albums()) if (a.id == id) keep = a;
+        SQLiteDatabase db = getWritableDatabase();
+        db.delete("album_items", "album = ?", new String[] {String.valueOf(id)});
+        db.delete("albums", "id = ?", new String[] {String.valueOf(id)});
+        return keep;
+    }
+
+    void restoreAlbum(Album a) {
+        SQLiteDatabase db = getWritableDatabase();
+        db.beginTransaction();
+        try {
+            ContentValues v = new ContentValues();
+            v.put("id", a.id);
+            v.put("name", a.name);
+            v.put("created", a.created);
+            db.insertWithOnConflict("albums", null, v, SQLiteDatabase.CONFLICT_REPLACE);
+            long now = System.currentTimeMillis();
+            for (int i = 0; i < a.keys.size(); i++) {
+                ContentValues iv = new ContentValues();
+                iv.put("album", a.id);
+                iv.put("item", a.keys.get(i));
+                iv.put("added", now - i);
+                db.insertWithOnConflict("album_items", null, iv, SQLiteDatabase.CONFLICT_IGNORE);
+            }
+            db.setTransactionSuccessful();
+        } finally {
+            db.endTransaction();
+        }
+    }
+
+    /** Adds photos; returns how many were new to the album. */
+    int addToAlbum(long album, List<Long> keys) {
+        SQLiteDatabase db = getWritableDatabase();
+        int added = 0;
+        long now = System.currentTimeMillis();
+        db.beginTransaction();
+        try {
+            for (int i = 0; i < keys.size(); i++) {
+                ContentValues v = new ContentValues();
+                v.put("album", album);
+                v.put("item", keys.get(i));
+                v.put("added", now + i);
+                if (db.insertWithOnConflict("album_items", null, v, SQLiteDatabase.CONFLICT_IGNORE) != -1) added++;
+            }
+            db.setTransactionSuccessful();
+        } finally {
+            db.endTransaction();
+        }
+        return added;
+    }
+
+    void removeFromAlbum(long album, List<Long> keys) {
+        SQLiteDatabase db = getWritableDatabase();
+        db.beginTransaction();
+        try {
+            for (long k : keys) {
+                db.delete("album_items", "album = ? AND item = ?",
+                        new String[] {String.valueOf(album), String.valueOf(k)});
+            }
+            db.setTransactionSuccessful();
+        } finally {
+            db.endTransaction();
+        }
+    }
+
+    // ---- hidden ----
+
+    Set<Long> hidden() {
+        Set<Long> out = new HashSet<>();
+        Cursor c = getReadableDatabase().rawQuery("SELECT item FROM hidden", null);
+        try {
+            while (c.moveToNext()) out.add(c.getLong(0));
+        } finally {
+            c.close();
+        }
+        return out;
+    }
+
+    void hide(List<Long> keys) {
+        SQLiteDatabase db = getWritableDatabase();
+        long now = System.currentTimeMillis();
+        db.beginTransaction();
+        try {
+            for (long k : keys) {
+                ContentValues v = new ContentValues();
+                v.put("item", k);
+                v.put("at", now);
+                db.insertWithOnConflict("hidden", null, v, SQLiteDatabase.CONFLICT_REPLACE);
+            }
+            db.setTransactionSuccessful();
+        } finally {
+            db.endTransaction();
+        }
+    }
+
+    void unhide(List<Long> keys) {
+        SQLiteDatabase db = getWritableDatabase();
+        db.beginTransaction();
+        try {
+            for (long k : keys) db.delete("hidden", "item = ?", new String[] {String.valueOf(k)});
+            db.setTransactionSuccessful();
+        } finally {
+            db.endTransaction();
+        }
+    }
+}

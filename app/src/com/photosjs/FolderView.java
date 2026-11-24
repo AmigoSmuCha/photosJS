@@ -34,6 +34,13 @@ public class FolderView extends View {
         void onOpenFolder(Media.Folder f);
 
         void onBoardColumnsChanged(int cols);
+
+        /** a long press on a board (only where boards can be changed: albums) */
+        void onBoardHold(FolderView from, Media.Folder f, RectF screen, float radius, float x, float y);
+
+        void onHoldMove(float x, float y);
+
+        void onHoldEnd(float x, float y, boolean cancel);
     }
 
     static final int[] LEVELS = {1, 2, 3};
@@ -58,7 +65,8 @@ public class FolderView extends View {
     private float textScale = 1f;
     private int level = 1;
     private float scrollY;
-    private boolean stoppedFling, pinching, pinchedThisTouch;
+    private boolean stoppedFling, pinching, pinchedThisTouch, holdable, holding;
+    private String empty = "";
     private float cum = 1f, focusX, focusY;
     private final Set<Long> waited = new HashSet<>();
     private final HashMap<Long, Long> arrived = new HashMap<>();
@@ -102,6 +110,24 @@ public class FolderView extends View {
                 int i = indexAt(e.getX(), e.getY());
                 if (i >= 0 && listener != null) listener.onOpenFolder(folders.get(i));
                 return true;
+            }
+
+            @Override
+            public void onLongPress(MotionEvent e) {
+                if (!holdable || pinchedThisTouch || pinching || listener == null) return;
+                int i = indexAt(e.getX(), e.getY());
+                if (i < 0) return;
+                coverRect(i, r);
+                r.offset(0, -scrollY);
+                int[] loc = new int[2];
+                getLocationOnScreen(loc);
+                RectF scr = new RectF(r);
+                scr.offset(loc[0], loc[1]);
+                holding = true;
+                ViewParent p = getParent();
+                if (p != null) p.requestDisallowInterceptTouchEvent(true);
+                performHapticFeedback(HapticFeedbackConstants.LONG_PRESS);
+                listener.onBoardHold(FolderView.this, folders.get(i), scr, radius(), e.getRawX(), e.getRawY());
             }
         });
         scaler = new ScaleGestureDetector(c, new ScaleGestureDetector.SimpleOnScaleGestureListener() {
@@ -158,6 +184,16 @@ public class FolderView extends View {
     private void applyText() {
         name.setTextSize(10 * dp * textScale);
         meta.setTextSize(8.5f * dp * textScale);
+    }
+
+    void setHoldable(boolean h) {
+        holdable = h;
+    }
+
+    /** a quiet line when there is nothing to show */
+    void setEmptyText(String s) {
+        empty = s;
+        invalidate();
     }
 
     void setColumns(int cols) {
@@ -323,6 +359,11 @@ public class FolderView extends View {
             again |= drawBoard(c, f, r, rad, bucket, placeholder, alpha, now);
         }
         if (thumbs != null) thumbs.frameEnd();
+        if (folders.isEmpty() && !empty.isEmpty()) {
+            name.setColor(t.s2);
+            name.setAlpha(255);
+            c.drawText(empty, (getWidth() - name.measureText(empty)) / 2f, getHeight() / 2f, name);
+        }
         if (again) postInvalidateOnAnimation();
     }
 
@@ -421,6 +462,16 @@ public class FolderView extends View {
 
     @Override
     public boolean onTouchEvent(MotionEvent e) {
+        if (holding) {
+            int act = e.getActionMasked();
+            if (act == MotionEvent.ACTION_MOVE) {
+                listener.onHoldMove(e.getRawX(), e.getRawY());
+            } else if (act == MotionEvent.ACTION_UP || act == MotionEvent.ACTION_CANCEL) {
+                holding = false;
+                listener.onHoldEnd(e.getRawX(), e.getRawY(), act == MotionEvent.ACTION_CANCEL);
+            }
+            return true;
+        }
         if (e.getActionMasked() == MotionEvent.ACTION_DOWN) {
             stoppedFling = !scroller.isFinished();
             pinchedThisTouch = false;

@@ -21,6 +21,7 @@ public class TopLine extends View {
     private String titleText = "", countText = "", message = null, oldTitle = null;
     private int messageColor;
     private boolean blocks;
+    private Runnable undo;
     private long messageAt = -1, messageMs = 2600, titleAt = -1;
     private static final long FADE_FULL = 260;
 
@@ -65,6 +66,12 @@ public class TopLine extends View {
 
     /** color 0 = the hint shade */
     void message(String text, long ms, int color) {
+        message(text, ms, color, null);
+    }
+
+    /** A message that can be tapped to undo what it reports. */
+    void message(String text, long ms, int color, Runnable undo) {
+        this.undo = undo;
         message = text;
         messageMs = ms;
         messageColor = color;
@@ -73,10 +80,24 @@ public class TopLine extends View {
     }
 
     void clearMessage() {
+        undo = null;
         if (message == null) return;
         long now = SystemClock.uptimeMillis();
         if (now - messageAt < messageMs) messageAt = now - messageMs; // fade out from now
         invalidate();
+    }
+
+    @Override
+    public boolean onTouchEvent(android.view.MotionEvent e) {
+        if (undo == null || message == null) return false;
+        if (e.getActionMasked() == android.view.MotionEvent.ACTION_UP) {
+            Runnable u = undo;
+            undo = null;
+            clearMessage();
+            performHapticFeedback(android.view.HapticFeedbackConstants.VIRTUAL_KEY);
+            u.run();
+        }
+        return true;
     }
 
     @Override
@@ -95,7 +116,10 @@ public class TopLine extends View {
             if (age < FADE) m = age / (float) FADE;
             else if (age < messageMs) m = 1f;
             else if (age < messageMs + FADE) m = 1f - (age - messageMs) / (float) FADE;
-            else message = null;
+            else {
+                message = null;
+                undo = null;
+            }
             if (message != null) again = true;
         }
         float bk = BlockFont.block(title.getTextSize());
