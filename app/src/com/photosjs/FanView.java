@@ -38,12 +38,12 @@ public class FanView extends View {
     }
 
     // actions
-    static final int ALBUM = 0, WALLPAPER = 1, EDIT = 2, SHARE = 3, HIDE = 4, DELETE = 5, INFO = 6;
+    static final int ALBUM = 0, WALLPAPER = 1, EDIT = 2, SHARE = 3, HIDE = 4, DELETE = 5, INFO = 6, SELECT = 7;
     static final int RENAME = 20, DROP_ALBUM = 21;
     static final int W_HOME = 30, W_LOCKJS = 31;
     static final int NONE = -1;
 
-    static final int[] PHOTO_ACTIONS = {ALBUM, WALLPAPER, EDIT, SHARE, HIDE, DELETE, INFO};
+    static final int[] PHOTO_ACTIONS = {ALBUM, SELECT, WALLPAPER, EDIT, SHARE, HIDE, DELETE, INFO};
 
     static String name(int a) {
         switch (a) {
@@ -51,7 +51,8 @@ public class FanView extends View {
             case WALLPAPER: return "set as wallpaper";
             case EDIT: return "edit";
             case SHARE: return "share";
-            case HIDE: return "hide";
+            case HIDE: return "set aside";
+            case SELECT: return "select";
             case DELETE: return "move to trash";
             case INFO: return "info";
             case RENAME: return "rename album";
@@ -375,8 +376,13 @@ public class FanView extends View {
                 c.drawRoundRect(b.left + 1 * u, b.top + 6 * u, b.right - 1 * u, b.bottom, rr, rr, stroke);
                 break;
             case HIDE:
-                c.drawRoundRect(b.left + 1 * u, b.top + 3 * u, b.right - 1 * u, b.bottom - 3 * u, rr, rr, stroke);
-                c.drawLine(b.left, b.bottom, b.right, b.top, stroke);
+                // set aside: the picture's place stays, a small one moved off to the side
+                c.drawRoundRect(b.left + 0.7f * u, b.top + 2 * u, b.left + 7.5f * u, b.bottom - 2 * u, rr, rr, stroke);
+                c.drawRoundRect(b.right - 3.2f * u, b.bottom - 5.5f * u, b.right, b.bottom - 2 * u, rr, rr, fill);
+                break;
+            case SELECT:
+                c.drawRoundRect(b.left + 1 * u, b.top + 1 * u, b.right - 1 * u, b.bottom - 1 * u, rr, rr, stroke);
+                c.drawRect(b.centerX() - 2 * u, b.centerY() - 2 * u, b.centerX() + 2 * u, b.centerY() + 2 * u, fill);
                 break;
             case DELETE:
             case DROP_ALBUM:

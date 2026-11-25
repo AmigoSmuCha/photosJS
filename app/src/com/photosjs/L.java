@@ -65,9 +65,10 @@ final class L {
         return getInt(c, "datenum", 0) == 1;
     }
 
-    /** headings (date labels, the reading line) in the blocks face from lockJS */
-    static boolean blocks(Context c) {
-        return getInt(c, "blocks", 0) == 1;
+    /** the face for headings: Heading.PLAIN, BLOCKS, ALAGARD or CAPS */
+    static int heading(Context c) {
+        if (!has(c, "heading")) return getInt(c, "blocks", 0) == 1 ? Heading.BLOCKS : Heading.PLAIN;
+        return Math.max(0, Math.min(Heading.NAMES.length - 1, getInt(c, "heading", 0)));
     }
 
     /** 0 auto (day / month / year by grid size), 1 day, 2 month, 3 year, 4 off */

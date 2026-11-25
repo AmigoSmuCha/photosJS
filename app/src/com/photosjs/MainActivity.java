@@ -86,6 +86,7 @@ public class MainActivity extends Activity implements GridView.Listener, FolderV
     // what the fan / sheet is about
     private List<Media.Item> pending = new ArrayList<>();
     private Media.Folder holdBoard;
+    private GridView holdGrid;
     private boolean renaming;
     private List<Media.Item> trashing = new ArrayList<>();
 
@@ -221,21 +222,22 @@ public class MainActivity extends Activity implements GridView.Listener, FolderV
     }
 
     private void applyLook(boolean relayoutBars) {
-        boolean rounded = L.rounded(this), airy = L.airy(this), blocks = L.blocks(this);
+        boolean rounded = L.rounded(this), airy = L.airy(this);
+        int heading = L.heading(this);
         boolean nums = L.dateNumbers(this);
         float s = L.textScale(this);
         int dates = L.dates(this);
-        for (GridView g : grids()) g.setLook(rounded, airy, dates, nums, blocks, s);
+        for (GridView g : grids()) g.setLook(rounded, airy, dates, nums, heading, s);
         folderView.setLook(rounded, airy, s);
         albumBoards.setLook(rounded, airy, s);
-        bar.setLook(rounded, blocks, s);
-        settings.setLook(blocks, s);
+        bar.setLook(rounded, heading, s);
+        settings.setLook(heading, s);
         fan.setRounded(rounded);
         viewer.setLook(rounded, nums, s);
         editor.setLook(rounded, s);
         sheet.setLook(t, rounded, s);
         top.setTextScale(s);
-        top.setBlocks(blocks);
+        top.setHeading(heading);
         LinearLayout.LayoutParams tl = (LinearLayout.LayoutParams) top.getLayoutParams();
         tl.height = Math.round(27 * dp * s);
         LinearLayout.LayoutParams bl = (LinearLayout.LayoutParams) bar.getLayoutParams();
@@ -377,7 +379,7 @@ public class MainActivity extends Activity implements GridView.Listener, FolderV
     /** One dim line about the gestures that matter, until they have been used. */
     private void firstHint() {
         if (L.getInt(this, "used_pinch", 0) == 1 && L.getInt(this, "used_hold", 0) == 1) return;
-        top.message("pinch to resize · hold a photo for more · swipe for pages", 6000, 0);
+        top.message("pinch to resize · hold a photo for more · tap with two fingers to select", 7000, 0);
     }
 
     // ---- views and data ----
@@ -545,7 +547,7 @@ public class MainActivity extends Activity implements GridView.Listener, FolderV
 
     private void updateTop() {
         if (hiddenOpen) {
-            top.set("hidden", count(hiddenGrid.items().size()));
+            top.set("set aside", count(hiddenGrid.items().size()));
         } else if (tab == TAB_PHOTOS) {
             top.set("photos", loadedOnce ? count(photoCount) : "");
         } else if (tab == TAB_SETTINGS) {
@@ -653,31 +655,36 @@ public class MainActivity extends Activity implements GridView.Listener, FolderV
     // ---- selecting ----
 
     private String[] actionsFor(GridView g) {
-        if (g == hiddenGrid) return new String[] {"unhide", "trash"};
-        if (g == albumGrid) return new String[] {"album", "remove", "share", "hide", "trash"};
-        return new String[] {"album", "share", "hide", "trash"};
+        if (g == hiddenGrid) return new String[] {"bring back", "trash"};
+        if (g == albumGrid) return new String[] {"album", "remove", "share", "aside", "trash"};
+        return new String[] {"album", "share", "aside", "trash"};
     }
 
-    @Override
-    public void onSelectToggle() {
-        GridView g = activeGrid();
-        if (g == null) {
-            top.message("selecting works in a feed of photos");
-            return;
-        }
-        if (g.selecting()) {
-            if (g == hiddenGrid) closeHidden();
-            else exitSelect();
-            return;
-        }
+    /** Selecting, in this feed, starting with this photo (if any). */
+    private void startSelect(GridView g, Media.Item first) {
+        if (g == null) return;
         g.setSelecting(true);
         pager.setLocked(true);
         bar.setSelecting(true, 0, actionsFor(g));
+        if (first != null) g.selectKey(first.key());
         int shown = L.getInt(this, "hint_select", 0);
-        if (shown < 3) {
+        if (shown < 3 && g != hiddenGrid) {
             L.putInt(this, "hint_select", shown + 1);
             top.message("tap photos, or drag sideways across them", 4000, 0);
         }
+    }
+
+    @Override
+    public void onTwoFingerTap(GridView from, Media.Item it) {
+        if (from == hiddenGrid) return;
+        if (from.selecting()) exitSelect();
+        else startSelect(from, it);
+    }
+
+    @Override
+    public void onSelectDone() {
+        if (hiddenOpen) closeHidden();
+        else exitSelect();
     }
 
     private void exitSelect() {
@@ -702,13 +709,13 @@ public class MainActivity extends Activity implements GridView.Listener, FolderV
             case "album": chooseAlbum(sel); break;
             case "remove": removeFromAlbum(sel); break;
             case "share": share(sel); break;
-            case "hide": hide(sel); break;
-            case "unhide": unhide(sel); break;
+            case "aside": hide(sel); break;
+            case "bring back": unhide(sel); break;
             case "trash": trash(sel); break;
         }
         if (a.equals("album")) return;
         if (g == hiddenGrid) {
-            // stay in the hidden photos, ready for more
+            // stay with the photos set aside, ready for more
             g.setSelecting(false);
             g.setSelecting(true);
             bar.setSelecting(true, 0, actionsFor(g));
@@ -720,7 +727,7 @@ public class MainActivity extends Activity implements GridView.Listener, FolderV
     // ---- the long-press fan ----
 
     private int[] fanActions() {
-        int[] def = {FanView.ALBUM, FanView.WALLPAPER, FanView.EDIT, FanView.NONE};
+        int[] def = {FanView.ALBUM, FanView.SELECT, FanView.WALLPAPER, FanView.EDIT};
         int[] out = new int[4];
         for (int i = 0; i < 4; i++) out[i] = L.getInt(this, "fan" + i, def[i]);
         return out;
@@ -731,6 +738,7 @@ public class MainActivity extends Activity implements GridView.Listener, FolderV
                             float x, float y) {
         L.putInt(this, "used_hold", 1);
         holdBoard = null;
+        holdGrid = from;
         pending = new ArrayList<>();
         pending.add(it);
         int[] acts = from == hiddenGrid ? new int[] {FanView.HIDE, FanView.DELETE, FanView.INFO} : fanActions();
@@ -758,7 +766,7 @@ public class MainActivity extends Activity implements GridView.Listener, FolderV
     @Override
     public void onFanHover(int action) {
         if (action == FanView.NONE) unsay();
-        else say(action == FanView.HIDE && hiddenOpen ? "unhide" : FanView.name(action), 60000, t.text);
+        else say(action == FanView.HIDE && hiddenOpen ? "bring back" : FanView.name(action), 60000, t.text);
     }
 
     @Override
@@ -778,6 +786,7 @@ public class MainActivity extends Activity implements GridView.Listener, FolderV
         List<Media.Item> items = pending;
         switch (action) {
             case FanView.ALBUM: chooseAlbum(items); break;
+            case FanView.SELECT: if (!items.isEmpty()) startSelect(holdGrid, items.get(0)); break;
             case FanView.EDIT: if (!items.isEmpty()) edit(items.get(0)); break;
             case FanView.SHARE: share(items); break;
             case FanView.HIDE:
@@ -911,7 +920,7 @@ public class MainActivity extends Activity implements GridView.Listener, FolderV
         store.hide(ks);
         hiddenKeys.addAll(ks);
         refreshAfterHiding();
-        say(photosWord(ks.size()) + " hidden · tap to undo", 5000, 0, new Runnable() {
+        say(photosWord(ks.size()) + " set aside · tap to undo", 5000, 0, new Runnable() {
             @Override
             public void run() {
                 store.unhide(ks);
@@ -1129,7 +1138,7 @@ public class MainActivity extends Activity implements GridView.Listener, FolderV
             case "album": chooseAlbum(one); break;
             case "edit": edit(it); break;
             case "share": share(one); break;
-            case "hide": hide(one); break;
+            case "aside": hide(one); break;
             case "trash": trash(one); break;
             case "info": info(it); break;
         }
@@ -1319,9 +1328,12 @@ public class MainActivity extends Activity implements GridView.Listener, FolderV
     public void onViewerHold(Media.Item it, RectF screen, Bitmap bm, float x, float y) {
         L.putInt(this, "used_hold", 1);
         holdBoard = null;
+        holdGrid = null;
         pending = new ArrayList<>();
         pending.add(it);
-        fan.open(screen, bm, 0, x, y, fanActions(), false);
+        int[] acts = fanActions();
+        for (int i = 0; i < acts.length; i++) if (acts[i] == FanView.SELECT) acts[i] = FanView.NONE;
+        fan.open(screen, bm, 0, x, y, acts, false);
     }
 
     @Override
@@ -1393,7 +1405,7 @@ public class MainActivity extends Activity implements GridView.Listener, FolderV
         hiddenGrid.animate().alpha(1f).setDuration(Motion.ms(220));
         pager.setLocked(true);
         updateTop();
-        onSelectToggle();
+        startSelect(hiddenGrid, null);
     }
 
     private void closeHidden() {
@@ -1560,15 +1572,16 @@ public class MainActivity extends Activity implements GridView.Listener, FolderV
                 applyLook(true);
             }
         });
-        r.add(new Row("headings", "dates and titles: plain letters or lockJS blocks") {
+        r.add(new Row("headings", "dates and titles: plain, blocks, alagard or spaced caps") {
             @Override
             public String value() {
-                return L.blocks(MainActivity.this) ? "blocks" : "plain";
+                return Heading.NAMES[L.heading(MainActivity.this)];
             }
 
             @Override
             public void step(int d) {
-                cycle("blocks", 0, 2, d);
+                L.putInt(MainActivity.this, "heading", L.heading(MainActivity.this));
+                cycle("heading", 0, Heading.NAMES.length, d);
                 applyLook(false);
             }
         });
@@ -1648,10 +1661,10 @@ public class MainActivity extends Activity implements GridView.Listener, FolderV
                 applyLook(false);
             }
         });
-        r.add(new Row("videos", "hidden: only photos and pictures are shown") {
+        r.add(new Row("videos", "off: only photos and pictures are shown") {
             @Override
             public String value() {
-                return videos() ? "shown" : "hidden";
+                return videos() ? "on" : "off";
             }
 
             @Override
@@ -1691,7 +1704,7 @@ public class MainActivity extends Activity implements GridView.Listener, FolderV
         });
 
         r.add(new Head("long press"));
-        final int[] fanDef = {FanView.ALBUM, FanView.WALLPAPER, FanView.EDIT, FanView.NONE};
+        final int[] fanDef = {FanView.ALBUM, FanView.SELECT, FanView.WALLPAPER, FanView.EDIT};
         final int[] choices = new int[FanView.PHOTO_ACTIONS.length + 1];
         choices[0] = FanView.NONE;
         System.arraycopy(FanView.PHOTO_ACTIONS, 0, choices, 1, FanView.PHOTO_ACTIONS.length);
@@ -1727,7 +1740,7 @@ public class MainActivity extends Activity implements GridView.Listener, FolderV
         r.add(new Row("sizes", "how much space each board takes") {
             @Override
             public String value() {
-                return sizes() ? "shown" : "hidden";
+                return sizes() ? "on" : "off";
             }
 
             @Override
@@ -1738,8 +1751,8 @@ public class MainActivity extends Activity implements GridView.Listener, FolderV
             }
         });
 
-        r.add(new Head("hidden and trash"));
-        r.add(new Row("hidden photos", "hidden here only; other apps still see them") {
+        r.add(new Head("set aside and trash"));
+        r.add(new Row("set aside", "kept out of photosJS only; other apps still see them") {
             @Override
             public String value() {
                 int n = 0;
@@ -1770,6 +1783,18 @@ public class MainActivity extends Activity implements GridView.Listener, FolderV
                 }
             });
         }
+
+        r.add(new Head("about"));
+        r.add(new Row("fonts", "Ubuntu Sans Mono · Alagard by Hewett Tsoi (Pix3M)") {
+            @Override
+            public String value() {
+                return "";
+            }
+
+            @Override
+            public void step(int d) {
+            }
+        });
 
         final String crash = L.getString(this, "crash", "");
         if (!crash.isEmpty()) {

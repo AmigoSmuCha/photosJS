@@ -49,6 +49,9 @@ public class GridView extends View {
         void onHoldEnd(float x, float y, boolean cancel);
 
         void onSelectionChanged(GridView from, int count);
+
+        /** both fingers down and up again quickly, without pinching: select (it may be null) */
+        void onTwoFingerTap(GridView from, Media.Item it);
     }
 
     static final int[] LEVELS = {1, 2, 3, 4, 5, 6, 8};
@@ -77,7 +80,8 @@ public class GridView extends View {
     // look
     private boolean rounded = true, airy = true;
     private int dateMode = 2;
-    private boolean dateNumbers, blocks;
+    private boolean dateNumbers;
+    private int heading;
     private float textScale = 1f;
     private float gap, margin, radius;
     private int labelH;
@@ -138,6 +142,11 @@ public class GridView extends View {
 
     // holding (the long-press fan)
     private boolean holding;
+    // a two-finger tap
+    private long twoAt = -1;
+    private boolean twoValid;
+    private float twoX, twoY, twoD;
+    private int twoLevel;
     // the photo that is open in the viewer leaves its place empty
     private long ghost = Long.MIN_VALUE;
 
@@ -275,7 +284,7 @@ public class GridView extends View {
     }
 
     /** Corners, air between photos, date labels and text size, all at once. */
-    void setLook(boolean rounded, boolean airy, int dateMode, boolean dateNumbers, boolean blocks,
+    void setLook(boolean rounded, boolean airy, int dateMode, boolean dateNumbers, int heading,
                  float textScale) {
         boolean change = rounded != this.rounded || airy != this.airy || dateMode != this.dateMode
                 || textScale != this.textScale || dateNumbers != this.dateNumbers;
@@ -283,7 +292,7 @@ public class GridView extends View {
         this.airy = airy;
         this.dateMode = dateMode;
         this.dateNumbers = dateNumbers;
-        this.blocks = blocks;
+        this.heading = heading;
         this.textScale = textScale;
         invalidate();
         applyTextScale();
@@ -375,6 +384,15 @@ public class GridView extends View {
 
     List<Media.Item> items() {
         return items;
+    }
+
+    /** select one photo (entering selecting with it) */
+    void selectKey(long key) {
+        if (selected.add(key)) {
+            selAt.put(key, SystemClock.uptimeMillis());
+            invalidate();
+            if (listener != null) listener.onSelectionChanged(this, selected.size());
+        }
     }
 
     private void toggle(long key) {
@@ -859,6 +877,7 @@ public class GridView extends View {
         if (live != 1f) c.scale(live, live, focusX, focusY);
         if (thumbs != null) thumbs.frameStart();
         int placeholder = Theme.mix(t.bg, t.plate, 0.7f);
+        Heading.style(label, getContext(), heading, 9.5f * dp * textScale);
         label.setColor(t.s1);
         float labelBase = labelH * 0.58f + label.getTextSize() * 0.36f;
         settling = false;
@@ -871,12 +890,7 @@ public class GridView extends View {
                     if (ly + labelH < 0 || ly > H) continue;
                     label.setAlpha(u < 1f ? Math.round(255 * Motion.fade(u)) : 255);
                     float lx = ex[e] + (airy ? 3 * dp : 8 * dp);
-                    if (blocks) {
-                        BlockFont.draw(c, eLabel[e], lx, ly + labelH * 0.56f,
-                                BlockFont.block(label.getTextSize()), label);
-                    } else {
-                        c.drawText(eLabel[e], lx, ly + labelBase, label);
-                    }
+                    Heading.draw(c, eLabel[e], heading, lx, ly + labelH * 0.56f, label);
                     continue;
                 }
                 Media.Item it = items.get(eItem[e]);
@@ -1034,21 +1048,17 @@ public class GridView extends View {
             int e = firstVisibleItemEntry();
             if (e >= 0 && dated) {
                 String s = monthYear(items.get(eItem[e]));
-                float old = label.getTextSize();
+                Heading.style(label, getContext(), heading, 10 * dp * textScale);
                 label.setColor(t.text);
                 label.setAlpha(255);
-                label.setTextSize(10 * dp * textScale);
-                float bk = BlockFont.block(label.getTextSize());
-                float tw = blocks ? BlockFont.width(s, bk) : label.measureText(s);
+                float tw = Heading.width(s, heading, label);
                 float ph = 8 * dp, th = 26 * dp * textScale;
                 float tx = x - 8 * dp - tw - 2 * ph;
                 float ty = clamp(y + fastH / 2 - th / 2, 0, getHeight() - th);
                 fill.setColor(t.plate);
                 float cr = rounded ? 4 * dp : 0;
                 c.drawRoundRect(tx, ty, tx + tw + 2 * ph, ty + th, cr, cr, fill);
-                if (blocks) BlockFont.draw(c, s, tx + ph, ty + th / 2, bk, label);
-                else c.drawText(s, tx + ph, ty + th / 2 + label.getTextSize() * 0.36f, label);
-                label.setTextSize(old);
+                Heading.draw(c, s, heading, tx + ph, ty + th / 2, label);
             }
         }
         return true;
@@ -1092,6 +1102,7 @@ public class GridView extends View {
             }
             return true;
         }
+        twoFingerTap(e);
         if (selecting && strokeTouch(e)) return true;
         scaler.onTouchEvent(e);
         gestures.onTouchEvent(e);
@@ -1104,6 +1115,41 @@ public class GridView extends View {
             invalidate();
         }
         return true;
+    }
+
+    /** Two fingers down together and up again quickly, without moving or pinching. */
+    private void twoFingerTap(MotionEvent e) {
+        int act = e.getActionMasked();
+        if (act == MotionEvent.ACTION_DOWN) {
+            twoValid = false;
+            twoAt = -1;
+        } else if (act == MotionEvent.ACTION_POINTER_DOWN) {
+            pinchedThisTouch = true;     // nothing with two fingers is a tap on one photo
+            if (e.getPointerCount() == 2) {
+                twoValid = true;
+                twoAt = SystemClock.uptimeMillis();
+                twoX = (e.getX(0) + e.getX(1)) / 2f;
+                twoY = (e.getY(0) + e.getY(1)) / 2f;
+                twoD = (float) Math.hypot(e.getX(0) - e.getX(1), e.getY(0) - e.getY(1));
+                twoLevel = level;
+            } else {
+                twoValid = false;
+            }
+        } else if (act == MotionEvent.ACTION_MOVE && twoValid && e.getPointerCount() >= 2) {
+            float mx = (e.getX(0) + e.getX(1)) / 2f, my = (e.getY(0) + e.getY(1)) / 2f;
+            float d = (float) Math.hypot(e.getX(0) - e.getX(1), e.getY(0) - e.getY(1));
+            if (Math.hypot(mx - twoX, my - twoY) > slop * 1.5f || Math.abs(d - twoD) > slop * 1.5f) {
+                twoValid = false;
+            }
+        } else if (act == MotionEvent.ACTION_POINTER_UP) {
+            if (twoValid && level == twoLevel && SystemClock.uptimeMillis() - twoAt < 350 && listener != null) {
+                int en = entryAt(twoX, twoY);
+                Media.Item it = en >= 0 && eItem[en] >= 0 ? items.get(eItem[en]) : null;
+                performHapticFeedback(HapticFeedbackConstants.CLOCK_TICK);
+                listener.onTwoFingerTap(this, it);
+            }
+            twoValid = false;
+        }
     }
 
     /**

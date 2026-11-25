@@ -48,7 +48,8 @@ public class SettingsPage extends View {
     private float contentH;
     private int pressedRow = -1, pressedSide = 0;
     private float textScale = 1f, scroll, downX, downY, downScroll;
-    private boolean moved, blocks;
+    private boolean moved;
+    private int heading;
     private int rowH, headH;
 
     public SettingsPage(Context c) {
@@ -68,8 +69,8 @@ public class SettingsPage extends View {
         invalidate();
     }
 
-    void setLook(boolean blocks, float textScale) {
-        this.blocks = blocks;
+    void setLook(int heading, float textScale) {
+        this.heading = heading;
         this.textScale = textScale;
         applyText();
         measureRows();
@@ -135,19 +136,16 @@ public class SettingsPage extends View {
             Row r = rows.get(i);
             String v = r.value();
             if (v == null) {
+                Heading.style(head, getContext(), heading, 9 * dp * textScale);
                 head.setColor(t.s2);
                 float hy = yb - (yb - y) * 0.28f;
-                if (blocks) {
-                    float bk = BlockFont.block(head.getTextSize());
-                    BlockFont.draw(c, r.label(), pad, hy - bk * 2.5f, bk, head);
-                } else {
-                    c.drawText(r.label(), pad, hy, head);
-                }
+                Heading.draw(c, r.label(), heading, pad, hy - head.getTextSize() * 0.36f, head);
                 fill.setColor(t.hair);
                 c.drawRect(pad, yb - 1, getWidth() - pad, yb, fill);
                 continue;
             }
-            if (i == pressedRow && !moved) {
+            boolean info = v.isEmpty();   // a line to read, nothing to step
+            if (i == pressedRow && !moved && !info) {
                 fill.setColor(t.plate);
                 float mid = (vl + getWidth()) / 2f;
                 if (pressedSide < 0) c.drawRect(vl, y, mid, yb, fill);
@@ -162,6 +160,7 @@ public class SettingsPage extends View {
             desc.setColor(t.s1);
             c.drawText(TextUtils.ellipsize(r.desc(), desc, getWidth() - 2 * pad,
                     TextUtils.TruncateAt.END).toString(), pad, l2, desc);
+            if (info) continue;
             value.setColor(t.s2);
             float aw = value.measureText("›");
             c.drawText("‹", vl, l1, value);
@@ -190,7 +189,10 @@ public class SettingsPage extends View {
             case MotionEvent.ACTION_DOWN:
                 scroller.forceFinished(true);
                 pressedRow = rowAt(e.getY());
-                if (pressedRow >= 0 && rows.get(pressedRow).value() == null) pressedRow = -1;
+                if (pressedRow >= 0) {
+                    String pv = rows.get(pressedRow).value();
+                    if (pv == null || pv.isEmpty()) pressedRow = -1;
+                }
                 pressedSide = side;
                 downX = e.getX();
                 downY = e.getY();
