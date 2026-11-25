@@ -267,7 +267,7 @@ public class EditorView extends View {
         float s = Math.min(a.width() / rw, a.height() / rh);
         float w = rw * s, h = rh * s;
         shown.set(a.centerX() - w / 2, a.centerY() - h / 2, a.centerX() + w / 2, a.centerY() + h / 2);
-        if (mode == DRAW && zoom != 1f) {
+        if (zoom != 1f) {
             float cx = area.centerX(), cy = area.centerY();
             shown.set(cx + (shown.left - cx) * zoom + panX, cy + (shown.top - cy) * zoom + panY,
                     cx + (shown.right - cx) * zoom + panX, cy + (shown.bottom - cy) * zoom + panY);
@@ -316,7 +316,7 @@ public class EditorView extends View {
         boolean showNote = note != null && SystemClock.uptimeMillis() < noteUntil;
         text.setColor(showNote ? t.s1 : t.text);
         c.drawText(showNote ? note : mode == CROP ? "crop" : "draw", 10 * dp, base, text);
-        String right = loading ? "opening" : mode == DRAW && zoom != 1f
+        String right = loading ? "opening" : zoom != 1f
                 ? String.format(Locale.US, "%.1f×", zoom) : (square && mode == CROP ? "square" : "");
         text.setColor(t.s1);
         c.drawText(right, getWidth() - 10 * dp - text.measureText(right), base, text);
@@ -522,8 +522,10 @@ public class EditorView extends View {
         }
         if (work == null) return true;
         layoutShown();
-        if (act == MotionEvent.ACTION_POINTER_DOWN && mode == DRAW) {
-            // a second finger: zoom and move; a just-begun mark is not a mark
+        if (act == MotionEvent.ACTION_POINTER_DOWN) {
+            // a second finger: zoom and move; a just-begun mark is not a mark,
+            // and a crop corner being held lets go where it is
+            if (grab >= 0) cropUp();
             if (live != null) {
                 boolean tiny = liveTravel < 14 * dp || SystemClock.uptimeMillis() - liveAt < 140;
                 if (!tiny) commitStroke();
@@ -555,6 +557,10 @@ public class EditorView extends View {
             return true;
         }
         // crop
+        if (twoFinger) {
+            if (act == MotionEvent.ACTION_MOVE && e.getPointerCount() >= 2) pinch(e);
+            return true;
+        }
         if (grab >= 0) {
             if (act == MotionEvent.ACTION_MOVE) cropMove(x, y);
             else if (act == MotionEvent.ACTION_UP || act == MotionEvent.ACTION_CANCEL) cropUp();
@@ -574,6 +580,8 @@ public class EditorView extends View {
         switch (i) {
             case 0:
                 mode = CROP;
+                zoom = 1f;
+                panX = panY = 0;
                 break;
             case 1:
                 mode = DRAW;
@@ -695,6 +703,12 @@ public class EditorView extends View {
         pinchDist = d;
         pinchCx = cx;
         pinchCy = cy;
+        layoutShown();
+        float mx = area.centerX(), my = area.centerY();
+        if (shown.left > mx) panX -= shown.left - mx;
+        if (shown.right < mx) panX += mx - shown.right;
+        if (shown.top > my) panY -= shown.top - my;
+        if (shown.bottom < my) panY += my - shown.bottom;
         invalidate();
     }
 

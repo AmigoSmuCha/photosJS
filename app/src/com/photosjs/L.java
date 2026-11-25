@@ -107,8 +107,17 @@ final class L {
                     StringWriter w = new StringWriter();
                     e.printStackTrace(new PrintWriter(w));
                     String s = w.toString();
-                    p(c).edit().putString("crash", s.length() > 4000 ? s.substring(0, 4000) : s)
-                            .commit();
+                    if (s.length() > 3000) s = s.substring(0, 3000);
+                    // keep the last three, newest first
+                    String old = p(c).getString("crash", "");
+                    String all = s + (old.isEmpty() ? "" : "\n----\n" + old);
+                    String[] parts = all.split("\n----\n");
+                    StringBuilder keep = new StringBuilder();
+                    for (int i = 0; i < Math.min(3, parts.length); i++) {
+                        if (i > 0) keep.append("\n----\n");
+                        keep.append(parts[i]);
+                    }
+                    p(c).edit().putString("crash", keep.toString()).commit();
                 } catch (Throwable ignored) {
                 }
                 if (prev != null) prev.uncaughtException(t, e);
