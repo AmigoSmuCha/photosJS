@@ -61,7 +61,8 @@ public class FolderView extends View {
     private Thumbs thumbs;
     private Listener listener;
     private List<Media.Folder> folders = new ArrayList<>();
-    private boolean showSizes, rounded = true, airy = true;
+    private boolean showSizes, rounded = true;
+    private int space = 1;
     private float textScale = 1f;
     private int level = 1;
     private float scrollY;
@@ -172,9 +173,9 @@ public class FolderView extends View {
         listener = l;
     }
 
-    void setLook(boolean rounded, boolean airy, float textScale) {
+    void setLook(boolean rounded, int space, float textScale) {
         this.rounded = rounded;
-        this.airy = airy;
+        this.space = space;
         this.textScale = textScale;
         applyText();
         scrollY = clamp(scrollY);
@@ -216,11 +217,11 @@ public class FolderView extends View {
     }
 
     private float margin() {
-        return airy ? 6 * dp : 0;
+        return space > 0 ? L.gapDp(space, 1) * dp : 0;
     }
 
     private float gap() {
-        return airy ? 6 * dp : Math.max(1, Math.round(1.34f * dp));
+        return space > 0 ? L.gapDp(space, 1) * dp : Math.max(1, Math.round(1.34f * dp));
     }
 
     private float cardW() {
@@ -362,7 +363,7 @@ public class FolderView extends View {
         if (folders.isEmpty() && !empty.isEmpty()) {
             name.setColor(t.s2);
             name.setAlpha(255);
-            c.drawText(empty, (getWidth() - name.measureText(empty)) / 2f, getHeight() / 2f, name);
+            Heading.text(c, empty, (getWidth() - Heading.measure(empty, name)) / 2f, getHeight() / 2f, name);
         }
         if (again) postInvalidateOnAnimation();
     }
@@ -434,17 +435,15 @@ public class FolderView extends View {
         c.restore();
 
         // caption: name, then count (and size)
-        float px = airy ? 2 * dp : 6 * dp;
+        float px = space > 0 ? 2 * dp : 6 * dp;
         float l1 = cover.bottom + capH() * 0.42f, l2 = cover.bottom + capH() * 0.82f;
         name.setColor(t.text);
         name.setAlpha(Math.round(255 * alpha));
-        c.drawText(TextUtils.ellipsize(f.name, name, Math.max(0, cover.width() - 2 * px),
-                TextUtils.TruncateAt.END).toString(), cover.left + px, l1, name);
+        Heading.text(c, Heading.fitText(f.name, name, cover.width() - 2 * px), cover.left + px, l1, name);
         String m = f.count + (f.count == 1 ? " photo" : " photos") + (showSizes ? " · " + Media.size(f.size) : "");
         meta.setColor(t.s1);
         meta.setAlpha(Math.round(255 * alpha));
-        c.drawText(TextUtils.ellipsize(m, meta, Math.max(0, cover.width() - 2 * px),
-                TextUtils.TruncateAt.END).toString(), cover.left + px, l2, meta);
+        Heading.text(c, Heading.fitText(m, meta, cover.width() - 2 * px), cover.left + px, l2, meta);
         return again;
     }
 

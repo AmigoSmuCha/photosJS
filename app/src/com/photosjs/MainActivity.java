@@ -88,6 +88,10 @@ public class MainActivity extends Activity implements GridView.Listener, FolderV
     private List<Media.Item> pending = new ArrayList<>();
     private Media.Folder holdBoard;
     private GridView holdGrid;
+    // the photo under the finger (edit, wallpaper, info act on it), and whether
+    // the fan acts on the whole selection it belongs to
+    private Media.Item holdItem;
+    private boolean holdOnSelection;
     private boolean renaming;
     private List<Media.Item> trashing = new ArrayList<>();
     // photos photosJS just saved over: their new size, until Android has re-read them
@@ -233,14 +237,17 @@ public class MainActivity extends Activity implements GridView.Listener, FolderV
     }
 
     private void applyLook(boolean relayoutBars) {
-        boolean rounded = L.rounded(this), airy = L.airy(this);
+        // the font first: every view measures its words in it
+        Heading.setFace(this, L.heading(this));
+        boolean rounded = L.rounded(this);
+        int space = L.spacing(this);
         int heading = L.heading(this);
         boolean nums = L.dateNumbers(this);
         float s = L.textScale(this);
         int dates = L.dates(this);
-        for (GridView g : grids()) g.setLook(rounded, airy, dates, nums, heading, s);
-        folderView.setLook(rounded, airy, s);
-        albumBoards.setLook(rounded, airy, s);
+        for (GridView g : grids()) g.setLook(rounded, space, dates, nums, heading, s);
+        folderView.setLook(rounded, space, s);
+        albumBoards.setLook(rounded, space, s);
         bar.setLook(rounded, heading, s);
         settings.setLook(heading, s);
         fan.setRounded(rounded);
@@ -703,7 +710,7 @@ public class MainActivity extends Activity implements GridView.Listener, FolderV
         int shown = L.getInt(this, "hint_select", 0);
         if (shown < 3 && g != hiddenGrid) {
             L.putInt(this, "hint_select", shown + 1);
-            top.message("tap photos, or drag sideways across them", 4000, 0);
+            top.message("tap photos, or drag sideways · hold one for the fan", 4500, 0);
         }
     }
 
@@ -777,15 +784,30 @@ public class MainActivity extends Activity implements GridView.Listener, FolderV
         L.putInt(this, "used_hold", 1);
         holdBoard = null;
         holdGrid = from;
-        pending = new ArrayList<>();
-        pending.add(it);
+        holdItem = it;
+        // while selecting, holding a selected photo acts on all of them
+        holdOnSelection = from.selecting() && from.isSelected(it.key());
+        pending = holdOnSelection ? from.selectedItems() : one(it);
+        if (pending.isEmpty()) pending = one(it);
         int[] acts = from == hiddenGrid ? new int[] {FanView.HIDE, FanView.DELETE, FanView.INFO} : fanActions();
+        if (from.selecting()) {
+            for (int i = 0; i < acts.length; i++) if (acts[i] == FanView.SELECT) acts[i] = FanView.NONE;
+        }
         fan.open(screen, bm, radius, x, y, acts, false);
+        if (pending.size() > 1) say(count(pending.size()) + " photos", 60000, 0);
+    }
+
+    /** fan actions that take a whole selection; the rest take the photo under the finger */
+    private static boolean forMany(int action) {
+        return action == FanView.ALBUM || action == FanView.SHARE || action == FanView.HIDE
+                || action == FanView.DELETE;
     }
 
     @Override
     public void onBoardHold(FolderView from, Media.Folder f, RectF screen, float radius, float x, float y) {
         holdBoard = f;
+        holdItem = null;
+        holdOnSelection = false;
         pending = new ArrayList<>();
         Bitmap bm = f.cover != null ? thumbs.best(f.cover, 1) : null;
         fan.open(screen, bm, radius, x, y, new int[] {FanView.RENAME, FanView.DROP_ALBUM}, false);
@@ -803,8 +825,14 @@ public class MainActivity extends Activity implements GridView.Listener, FolderV
 
     @Override
     public void onFanHover(int action) {
-        if (action == FanView.NONE) unsay();
-        else say(action == FanView.HIDE && hiddenOpen ? "bring back" : FanView.name(action), 60000, t.text);
+        if (action == FanView.NONE) {
+            if (pending.size() > 1) say(count(pending.size()) + " photos", 60000, 0);
+            else unsay();
+            return;
+        }
+        String n = action == FanView.HIDE && hiddenOpen ? "bring back" : FanView.name(action);
+        if (pending.size() > 1 && forMany(action)) n += " · " + count(pending.size()) + " photos";
+        say(n, 60000, t.text);
     }
 
     @Override
@@ -822,19 +850,20 @@ public class MainActivity extends Activity implements GridView.Listener, FolderV
         }
         fan.close();
         List<Media.Item> items = pending;
+        Media.Item one = holdItem != null ? holdItem : items.isEmpty() ? null : items.get(0);
         switch (action) {
             case FanView.ALBUM: chooseAlbum(items); break;
-            case FanView.SELECT: if (!items.isEmpty()) startSelect(holdGrid, items.get(0)); break;
-            case FanView.EDIT: if (!items.isEmpty()) edit(items.get(0)); break;
+            case FanView.SELECT: if (one != null) startSelect(holdGrid, one); break;
+            case FanView.EDIT: if (one != null) edit(one); break;
             case FanView.SHARE: share(items); break;
             case FanView.HIDE:
                 if (hiddenOpen) unhide(items);
                 else hide(items);
                 break;
             case FanView.DELETE: trash(items); break;
-            case FanView.INFO: if (!items.isEmpty()) info(items.get(0)); break;
-            case FanView.W_HOME: if (!items.isEmpty()) homeWallpaper(items.get(0)); break;
-            case FanView.W_LOCKJS: if (!items.isEmpty()) toLockJS(items.get(0)); break;
+            case FanView.INFO: if (one != null) info(one); break;
+            case FanView.W_HOME: if (one != null) homeWallpaper(one); break;
+            case FanView.W_LOCKJS: if (one != null) toLockJS(one); break;
             case FanView.RENAME:
                 if (holdBoard != null) {
                     renaming = true;
@@ -843,6 +872,18 @@ public class MainActivity extends Activity implements GridView.Listener, FolderV
                 break;
             case FanView.DROP_ALBUM: if (holdBoard != null) dropAlbum(holdBoard.bucket); break;
         }
+        // done with the selection, as the same action in the bar would be
+        if (holdOnSelection && holdGrid != null && holdGrid.selecting()
+                && (action == FanView.SHARE || action == FanView.HIDE || action == FanView.DELETE)) {
+            if (holdGrid == hiddenGrid) {
+                holdGrid.setSelecting(false);
+                holdGrid.setSelecting(true);
+                bar.setSelecting(true, 0, actionsFor(holdGrid));
+            } else {
+                exitSelect();
+            }
+        }
+        holdOnSelection = false;
     }
 
     // ---- messages: the reading line, or the viewer's own while it is open ----
@@ -1556,8 +1597,9 @@ public class MainActivity extends Activity implements GridView.Listener, FolderV
         L.putInt(this, "used_hold", 1);
         holdBoard = null;
         holdGrid = null;
-        pending = new ArrayList<>();
-        pending.add(it);
+        holdItem = it;
+        holdOnSelection = false;
+        pending = one(it);
         int[] acts = fanActions();
         for (int i = 0; i < acts.length; i++) if (acts[i] == FanView.SELECT) acts[i] = FanView.NONE;
         fan.open(screen, bm, 0, x, y, acts, false);
@@ -1806,7 +1848,7 @@ public class MainActivity extends Activity implements GridView.Listener, FolderV
                 applyLook(true);
             }
         });
-        r.add(new Row("headings", "dates and titles: plain, blocks, alagard or spaced caps") {
+        r.add(new Row("font", "every word in the app: plain, blocks, alagard or spaced caps") {
             @Override
             public String value() {
                 return Heading.NAMES[L.heading(MainActivity.this)];
@@ -1843,15 +1885,16 @@ public class MainActivity extends Activity implements GridView.Listener, FolderV
                 applyLook(false);
             }
         });
-        r.add(new Row("spacing", "air between photos, or a hairline") {
+        r.add(new Row("spacing", "how much air between photos and boards") {
             @Override
             public String value() {
-                return L.airy(MainActivity.this) ? "airy" : "tight";
+                return L.SPACE_NAMES[L.spacing(MainActivity.this)];
             }
 
             @Override
             public void step(int d) {
-                cycle("airy", 1, 2, d);
+                L.putInt(MainActivity.this, "space", L.spacing(MainActivity.this));
+                cycle("space", 1, L.SPACE_NAMES.length, d);
                 applyLook(false);
             }
         });

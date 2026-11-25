@@ -4,7 +4,6 @@ import android.content.Context;
 import android.graphics.Canvas;
 import android.graphics.Paint;
 import android.text.TextPaint;
-import android.text.TextUtils;
 import android.view.HapticFeedbackConstants;
 import android.view.MotionEvent;
 import android.view.VelocityTracker;
@@ -13,6 +12,7 @@ import android.view.ViewConfiguration;
 import android.widget.OverScroller;
 
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.List;
 
 /**
@@ -45,6 +45,10 @@ public class SettingsPage extends View {
     private Theme t;
     private List<Row> rows = new ArrayList<>();
     private float[] rowTop = new float[0], rowBottom = new float[0];
+    // each row's name and description, broken into lines in the app's face
+    private List<List<String>> labLines = new ArrayList<>(), descLines = new ArrayList<>(),
+            valLines = new ArrayList<>();
+    private float labLine, descLine, rowPad;
     private float contentH;
     private int pressedRow = -1, pressedSide = 0;
     private float textScale = 1f, scroll, downX, downY, downScroll;
@@ -84,6 +88,9 @@ public class SettingsPage extends View {
         head.setTextSize(9 * dp * textScale);
         rowH = Math.round(46 * dp * textScale);
         headH = Math.round(34 * dp * textScale);
+        labLine = label.getTextSize() * 1.42f;
+        descLine = desc.getTextSize() * 1.5f;
+        rowPad = 7 * dp * textScale;
     }
 
     void setRows(List<Row> r) {
@@ -92,13 +99,42 @@ public class SettingsPage extends View {
         invalidate();
     }
 
+    /**
+     * Rows grow to fit: a name may take two lines (left of the value), a
+     * description up to three, so a wide face (blocks) still says it all.
+     */
     private void measureRows() {
         rowTop = new float[rows.size()];
         rowBottom = new float[rows.size()];
+        labLines = new ArrayList<>();
+        descLines = new ArrayList<>();
+        valLines = new ArrayList<>();
+        float aw = Heading.measure("›", value);
+        float W = getWidth() > 0 ? getWidth() : getResources().getDisplayMetrics().widthPixels;
+        float pad = 14 * dp;
         float y = 4 * dp;
         for (int i = 0; i < rows.size(); i++) {
+            Row r = rows.get(i);
             rowTop[i] = y;
-            y += rows.get(i).value() == null ? headH : rowH;
+            String v = r.value();
+            if (v == null) {
+                labLines.add(Collections.<String>emptyList());
+                descLines.add(Collections.<String>emptyList());
+                valLines.add(Collections.<String>emptyList());
+                y += headH;
+            } else {
+                float labRoom = v.isEmpty() ? W - 2 * pad : W * 0.5f - pad - 6 * dp;
+                List<String> lab = Heading.wrap(r.label(), label, labRoom, 2);
+                List<String> des = Heading.wrap(r.desc(), desc, W - 2 * pad, 3);
+                List<String> val = v.isEmpty() ? Collections.<String>emptyList()
+                        : Heading.wrap(v, value, W * 0.5f - pad - 2 * aw - 8 * dp, 2);
+                labLines.add(lab);
+                descLines.add(des);
+                valLines.add(val);
+                int top = Math.max(1, Math.max(lab.size(), val.size()));
+                float h = 2 * rowPad + top * labLine + des.size() * descLine;
+                y += Math.max(rowH, h);
+            }
             rowBottom[i] = y;
         }
         contentH = y + 16 * dp;
@@ -112,6 +148,7 @@ public class SettingsPage extends View {
     @Override
     protected void onSizeChanged(int w, int h, int ow, int oh) {
         super.onSizeChanged(w, h, ow, oh);
+        if (w != ow) measureRows();
         scroll = Math.max(0, Math.min(scroll, maxScroll()));
     }
 
@@ -152,23 +189,27 @@ public class SettingsPage extends View {
                 else if (pressedSide > 0) c.drawRect(mid, y, getWidth(), yb, fill);
                 else c.drawRect(0, y, vl, yb, fill);
             }
-            float h = yb - y;
-            float l1 = y + h * 0.44f, l2 = y + h * 0.80f;
+            // the lines sit in the middle of the row
+            List<String> lab = labLines.get(i), des = descLines.get(i), val = valLines.get(i);
+            int topLines = Math.max(1, Math.max(lab.size(), val.size()));
+            float block = topLines * labLine + des.size() * descLine;
+            float ly = y + ((yb - y) - block) / 2f;
+            float l1 = ly + labLine * 0.72f;
             label.setColor(t.text);
-            c.drawText(TextUtils.ellipsize(r.label(), label, vl - pad - 6 * dp,
-                    TextUtils.TruncateAt.END).toString(), pad, l1, label);
+            for (int k = 0; k < lab.size(); k++) Heading.text(c, lab.get(k), pad, l1 + k * labLine, label);
             desc.setColor(t.s1);
-            c.drawText(TextUtils.ellipsize(r.desc(), desc, getWidth() - 2 * pad,
-                    TextUtils.TruncateAt.END).toString(), pad, l2, desc);
+            float dy = ly + topLines * labLine + descLine * 0.70f;
+            for (int k = 0; k < des.size(); k++) Heading.text(c, des.get(k), pad, dy + k * descLine, desc);
             if (info) continue;
             value.setColor(t.s2);
-            float aw = value.measureText("›");
-            c.drawText("‹", vl, l1, value);
-            c.drawText("›", vr - aw, l1, value);
-            String vv = TextUtils.ellipsize(v, value, vr - vl - 2 * aw - 8 * dp,
-                    TextUtils.TruncateAt.END).toString();
+            float aw = Heading.measure("›", value);
+            Heading.text(c, "‹", vl, l1, value);
+            Heading.text(c, "›", vr - aw, l1, value);
             value.setColor(t.text);
-            c.drawText(vv, (vl + vr) / 2f - value.measureText(vv) / 2f, l1, value);
+            for (int k = 0; k < val.size(); k++) {
+                String vv = val.get(k);
+                Heading.text(c, vv, (vl + vr) / 2f - Heading.measure(vv, value) / 2f, l1 + k * labLine, value);
+            }
         }
         if (again) postInvalidateOnAnimation();
     }

@@ -864,14 +864,13 @@ public class ViewerView extends View {
         String pos = (index + 1) + " / " + items.size();
         text.setColor(t.s1);
         text.setAlpha(a);
-        float pw = text.measureText(pos);
-        c.drawText(pos, getWidth() - 14 * dp - pw, base, text);
+        float pw = Heading.measure(pos, text);
+        Heading.text(c, pos, getWidth() - 14 * dp - pw, base, text);
         boolean n = noteShowing();
         text.setColor(n ? t.s1 : t.text);
         text.setAlpha(a);
-        String when = TextUtils.ellipsize(n ? note : when(it), new android.text.TextPaint(text),
-                getWidth() - 40 * dp - pw, TextUtils.TruncateAt.END).toString();
-        c.drawText(when, 14 * dp, base, text);
+        String when = Heading.fitText(n ? note : when(it), text, getWidth() - 40 * dp - pw);
+        Heading.text(c, when, 14 * dp, base, text);
         // bottom: what can be done
         float top = getHeight() - h;
         fill.setColor(t.plate);
@@ -890,8 +889,8 @@ public class ViewerView extends View {
             }
             text.setColor(col);
             text.setAlpha(a);
-            float tw = text.measureText(label);
-            c.drawText(label, i * each + (each - tw) / 2f, top + base, text);
+            float tw = Heading.measure(label, text);
+            Heading.text(c, label, i * each + (each - tw) / 2f, top + base, text);
         }
     }
 

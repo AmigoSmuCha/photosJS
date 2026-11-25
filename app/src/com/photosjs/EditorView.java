@@ -315,11 +315,11 @@ public class EditorView extends View {
         // the reading line
         boolean showNote = note != null && SystemClock.uptimeMillis() < noteUntil;
         text.setColor(showNote ? t.s1 : t.text);
-        c.drawText(showNote ? note : mode == CROP ? "crop" : "draw", 10 * dp, base, text);
+        Heading.text(c, showNote ? note : mode == CROP ? "crop" : "draw", 10 * dp, base, text);
         String right = loading ? "opening" : zoom != 1f
                 ? String.format(Locale.US, "%.1f×", zoom) : (square && mode == CROP ? "square" : "");
         text.setColor(t.s1);
-        c.drawText(right, getWidth() - 10 * dp - text.measureText(right), base, text);
+        Heading.text(c, right, getWidth() - 10 * dp - Heading.measure(right, text), base, text);
 
         if (work != null) {
             c.save();
@@ -447,8 +447,8 @@ public class EditorView extends View {
                     fill.setColor(on ? Theme.mix(t.plate, t.text, 0.08f) : t.plate);
                     c.drawRoundRect(x0, y0, x1, y0 + rowH, rr, rr, fill);
                     text.setColor(on ? t.accent : t.text);
-                    float tw = text.measureText(label);
-                    c.drawText(label, (x0 + x1) / 2f - tw / 2f, y0 + rowH / 2f + text.getTextSize() * 0.36f, text);
+                    float tw = Heading.measure(label, text);
+                    Heading.text(c, label, (x0 + x1) / 2f - tw / 2f, y0 + rowH / 2f + text.getTextSize() * 0.36f, text);
                 }
             }
         }
@@ -466,18 +466,18 @@ public class EditorView extends View {
         float base = top + barH() / 2f + text.getTextSize() * 0.36f;
         float x = 4 * dp;
         for (int i = 0; i < 2; i++) {
-            float w = text.measureText(labels[i]) + 20 * dp;
+            float w = Heading.measure(labels[i], text) + 20 * dp;
             barRects[i].set(x, top, x + w, getHeight());
             text.setColor(cols[i]);
-            c.drawText(labels[i], x + 10 * dp, base, text);
+            Heading.text(c, labels[i], x + 10 * dp, base, text);
             x += w;
         }
         float xr = getWidth() - 4 * dp;
         for (int i = 3; i >= 2; i--) {
-            float w = text.measureText(labels[i]) + 20 * dp;
+            float w = Heading.measure(labels[i], text) + 20 * dp;
             barRects[i].set(xr - w, top, xr, getHeight());
             text.setColor(cols[i]);
-            c.drawText(labels[i], xr - w + 10 * dp, base, text);
+            Heading.text(c, labels[i], xr - w + 10 * dp, base, text);
             xr -= w;
         }
     }

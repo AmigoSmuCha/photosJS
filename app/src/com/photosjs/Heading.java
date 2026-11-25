@@ -8,21 +8,32 @@ import android.text.TextPaint;
 import android.text.TextUtils;
 
 import java.text.Normalizer;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.Locale;
 
 /**
- * The face for headings (date labels, the reading line, section heads):
- *   plain       - Ubuntu Sans Mono, as everything else
+ * The app's face, for every word (settings › font):
+ *   plain       - Ubuntu Sans Mono
  *   blocks      - lockJS's block face
  *   alagard     - Hewett Tsoi's gothic pixel font (ASCII only: accents dropped)
  *   spaced caps - bold capitals with air between the letters
- * Callers give a paint already sized for plain text; this adjusts it.
+ *
+ * Views keep their paints set up for plain text (typeface, size, colour) and
+ * write through text() / measure() / fitText() / wrap(), which take the same
+ * arguments as Canvas.drawText and Paint.measureText; the face is applied on
+ * the way. style() / draw() / width() / fit() are the older calls for paints
+ * a view has already styled itself (headings).
  */
 final class Heading {
     static final int PLAIN = 0, BLOCKS = 1, ALAGARD = 2, CAPS = 3;
     static final String[] NAMES = {"plain", "blocks", "alagard", "spaced caps"};
 
     private static Typeface alagard;
+    private static Context app;
+    private static int face = PLAIN;
+    // a copy of the caller's paint in the face (drawing happens on the main thread only)
+    private static final TextPaint scratch = new TextPaint();
 
     private Heading() {}
 
@@ -35,6 +46,16 @@ final class Heading {
             }
         }
         return alagard;
+    }
+
+    /** the face every word is written in from now on */
+    static void setFace(Context c, int f) {
+        app = c.getApplicationContext();
+        face = Math.max(0, Math.min(NAMES.length - 1, f));
+    }
+
+    static int face() {
+        return face;
     }
 
     /** the words as this face writes them */
@@ -55,7 +76,7 @@ final class Heading {
         switch (style) {
             case ALAGARD:
                 p.setTypeface(alagard(c));
-                p.setTextSize(Math.max(16f, Math.round(plainSize * 1.1f / 16f) * 16f));
+                p.setTextSize(alagardSize(plainSize));
                 p.setLetterSpacing(0f);
                 p.setAntiAlias(false);
                 break;
@@ -71,6 +92,10 @@ final class Heading {
                 p.setLetterSpacing(0f);
                 p.setAntiAlias(true);
         }
+    }
+
+    static float alagardSize(float plainSize) {
+        return Math.max(16f, Math.round(plainSize * 1.1f / 16f) * 16f);
     }
 
     static float width(String s, int style, Paint p) {
@@ -96,5 +121,96 @@ final class Heading {
         if (style == BLOCKS) return BlockFont.fit(t, BlockFont.block(p.getTextSize()), Math.max(0, room));
         TextPaint tp = p instanceof TextPaint ? (TextPaint) p : new TextPaint(p);
         return TextUtils.ellipsize(t, tp, Math.max(0, room), TextUtils.TruncateAt.END).toString();
+    }
+
+    // ---- every word: plain paints, written in the app's face ----
+
+    /** p, in the face (alagard and caps only) */
+    private static TextPaint faced(Paint p) {
+        float size = p.getTextSize();
+        scratch.set(p);
+        if (face == ALAGARD) {
+            scratch.setTypeface(alagard(app));
+            scratch.setTextSize(alagardSize(size));
+            scratch.setLetterSpacing(0f);
+            scratch.setAntiAlias(false);
+        } else {
+            scratch.setTypeface(L.fontBold(app));
+            scratch.setTextSize(size * 0.9f);
+            scratch.setLetterSpacing(0.14f);
+        }
+        return scratch;
+    }
+
+    /** Like c.drawText(s, x, baseline, p), in the app's face; p is set up for plain text. */
+    static void text(Canvas c, String s, float x, float baseline, Paint p) {
+        if (s == null || s.isEmpty()) return;
+        if (face == PLAIN || app == null) {
+            c.drawText(s, x, baseline, p);
+            return;
+        }
+        float size = p.getTextSize();
+        float cy = baseline - size * 0.36f;
+        String t = text(s, face);
+        if (face == BLOCKS) {
+            BlockFont.draw(c, t, x, cy, BlockFont.block(size), p);
+            return;
+        }
+        TextPaint q = faced(p);
+        float b = cy + q.getTextSize() * (face == ALAGARD ? 0.3f : 0.36f);
+        c.drawText(t, x, Math.round(b), q);
+    }
+
+    /** Like p.measureText(s), in the app's face. */
+    static float measure(String s, Paint p) {
+        if (s == null || s.isEmpty()) return 0;
+        if (face == PLAIN || app == null) return p.measureText(s);
+        String t = text(s, face);
+        if (face == BLOCKS) return BlockFont.width(t, BlockFont.block(p.getTextSize()));
+        return faced(p).measureText(t);
+    }
+
+    /** Shortened (with an ellipsis) to fit the room, in the app's face. */
+    static String fitText(String s, Paint p, float room) {
+        if (s == null) return "";
+        room = Math.max(0, room);
+        if (face == PLAIN || app == null) {
+            TextPaint tp = p instanceof TextPaint ? (TextPaint) p : new TextPaint(p);
+            return TextUtils.ellipsize(s, tp, room, TextUtils.TruncateAt.END).toString();
+        }
+        String t = text(s, face);
+        if (face == BLOCKS) return BlockFont.fit(t, BlockFont.block(p.getTextSize()), room);
+        return TextUtils.ellipsize(t, faced(p), room, TextUtils.TruncateAt.END).toString();
+    }
+
+    /** Broken into lines that fit, at spaces, at most maxLines (the last one shortened). */
+    static List<String> wrap(String s, Paint p, float room, int maxLines) {
+        List<String> out = new ArrayList<>();
+        if (s == null || s.isEmpty()) return out;
+        String[] words = s.split(" ");
+        StringBuilder line = new StringBuilder();
+        int i = 0;
+        while (i < words.length) {
+            String w = words[i];
+            String tryLine = line.length() == 0 ? w : line + " " + w;
+            if (measure(tryLine, p) <= room || line.length() == 0) {
+                line.setLength(0);
+                line.append(tryLine);
+                i++;
+                continue;
+            }
+            if (out.size() == maxLines - 1) break;
+            out.add(line.toString());
+            line.setLength(0);
+        }
+        if (i < words.length) {
+            // more than fits: the last line takes the rest, shortened
+            StringBuilder rest = new StringBuilder(line);
+            for (int k = i; k < words.length; k++) rest.append(' ').append(words[k]);
+            out.add(fitText(rest.toString(), p, room));
+        } else if (line.length() > 0) {
+            out.add(measure(line.toString(), p) <= room ? line.toString() : fitText(line.toString(), p, room));
+        }
+        return out;
     }
 }

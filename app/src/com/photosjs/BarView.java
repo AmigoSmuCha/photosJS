@@ -119,7 +119,7 @@ public class BarView extends View {
 
     /** the right end while picking */
     private float endW() {
-        return pickMany ? text.measureText("use") + 64 * dp * scale : text.measureText("cancel") + 32 * dp;
+        return pickMany ? Heading.measure("use", text) + 64 * dp * scale : Heading.measure("cancel", text) + 32 * dp;
     }
 
     /** The pager position, fractional while swiping (pages are in slot order). */
@@ -181,7 +181,7 @@ public class BarView extends View {
         if (!pickMany) {
             int col = pressed == 98 ? Theme.mix(t.s1, t.plate, 0.4f) : t.s1;
             text.setColor(col);
-            c.drawText("cancel", useRect.right - 16 * dp - text.measureText("cancel"), base, text);
+            Heading.text(c, "cancel", useRect.right - 16 * dp - Heading.measure("cancel", text), base, text);
             return;
         }
         boolean any = pickCount > 0;
@@ -189,13 +189,13 @@ public class BarView extends View {
         Heading.style(head, getContext(), heading, 10.5f * dp * scale);
         head.setColor(any ? t.accent : t.s2);
         float nw = Heading.width(n, heading, head);
-        float uw = text.measureText("use");
+        float uw = Heading.measure("use", text);
         float x = useRect.right - 16 * dp - uw - 8 * dp - nw;
         Heading.draw(c, n, heading, x, h / 2f, head);
         int col = any ? t.text : t.s2;
         if (pressed == 98) col = Theme.mix(col, t.plate, 0.4f);
         text.setColor(col);
-        c.drawText("use", useRect.right - 16 * dp - uw, base, text);
+        Heading.text(c, "use", useRect.right - 16 * dp - uw, base, text);
     }
 
     private void drawSelecting(Canvas c) {
@@ -210,10 +210,10 @@ public class BarView extends View {
         x += Heading.width(n, heading, head) + 10 * dp;
         // "done" at the right end
         String done = "done";
-        float dw = text.measureText(done) + 24 * dp;
+        float dw = Heading.measure(done, text) + 24 * dp;
         doneRect.set(getWidth() - dw, 0, getWidth(), h);
         text.setColor(pressed == 99 ? Theme.mix(t.text, t.plate, 0.4f) : t.text);
-        c.drawText(done, doneRect.left + 12 * dp, base, text);
+        Heading.text(c, done, doneRect.left + 12 * dp, base, text);
         // the actions share the room between
         float right = doneRect.left - 4 * dp;
         float each = actions.length == 0 ? 0 : (right - x) / actions.length;
@@ -223,8 +223,8 @@ public class BarView extends View {
             int col = count == 0 ? t.s2 : t.text;
             if (pressed == 100 + i) col = Theme.mix(col, t.plate, 0.4f);
             text.setColor(col);
-            float tw = text.measureText(actions[i]);
-            c.drawText(actions[i], l + (each - tw) / 2f, base, text);
+            float tw = Heading.measure(actions[i], text);
+            Heading.text(c, actions[i], l + (each - tw) / 2f, base, text);
         }
     }
 

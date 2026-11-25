@@ -4,7 +4,6 @@ import android.content.Context;
 import android.graphics.Canvas;
 import android.graphics.Paint;
 import android.os.SystemClock;
-import android.text.TextUtils;
 import android.text.TextPaint;
 import android.view.View;
 
@@ -35,7 +34,7 @@ public class TopLine extends View {
         setTextScale(1f);
     }
 
-    /** title and count in the heading face; messages stay in the plain one */
+    /** the app's face (settings › font), for the title, the count and messages */
     void setHeading(int h) {
         heading = h;
         invalidate();
@@ -152,13 +151,14 @@ public class TopLine extends View {
         head.setAlpha(Math.round(255 * ta * (1f - m)));
         heading(c, titleText, pad, base, cy, bk, room);
         if (m > 0f && message != null) {
+            // a message has the whole line: the count steps back while it shows
             title.setColor(messageColor != 0 ? messageColor : t.s1);
             title.setAlpha(Math.round(255 * m));
-            c.drawText(ellipsize(message, room), pad, base, title);
+            Heading.text(c, Heading.fitText(message, title, getWidth() - 2 * pad), pad, base, title);
         }
         if (!countText.isEmpty()) {
             head.setColor(t.s1);
-            head.setAlpha(255);
+            head.setAlpha(Math.round(255 * (1f - m)));
             Heading.draw(c, countText, heading, getWidth() - pad - countW, cy, head);
         }
         if (again) postInvalidateOnAnimation();
@@ -166,9 +166,5 @@ public class TopLine extends View {
 
     private void heading(Canvas c, String s, float x, float base, float cy, float bk, float room) {
         Heading.draw(c, Heading.fit(s, heading, head, room), heading, x, cy, head);
-    }
-
-    private String ellipsize(String s, float room) {
-        return TextUtils.ellipsize(s, title, Math.max(0, room), TextUtils.TruncateAt.END).toString();
     }
 }

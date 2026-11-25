@@ -3,7 +3,6 @@ package com.photosjs;
 import android.content.Context;
 import android.graphics.drawable.GradientDrawable;
 import android.text.InputType;
-import android.text.TextUtils;
 import android.util.TypedValue;
 import android.view.Gravity;
 import android.view.KeyEvent;
@@ -88,21 +87,19 @@ public class AlbumSheet extends FrameLayout {
         panel.setPadding(p, Math.round(12 * dp), p, Math.round(8 * dp));
     }
 
-    private TextView text(String s, int color, float size) {
-        TextView v = new TextView(getContext());
+    /** a line of words in the app's face */
+    private Words text(String s, int color, float size) {
+        Words v = new Words(getContext());
         v.setText(s);
-        v.setTextColor(color);
-        v.setTypeface(L.font(getContext()));
-        v.setTextSize(TypedValue.COMPLEX_UNIT_PX, size * dp * textScale);
-        v.setSingleLine(true);
-        v.setEllipsize(TextUtils.TruncateAt.END);
+        v.setColor(color);
+        v.setSize(size * dp * textScale);
         return v;
     }
 
     /** title, then "new album" and every album with its count */
     void showChooser(String title, List<Store.Album> albums, List<Integer> counts) {
         frame();
-        TextView head = text(title, t.s1, 9);
+        Words head = text(title, t.s1, 9);
         head.setPadding(0, 0, 0, Math.round(6 * dp));
         panel.addView(head);
         ScrollView sv = new ScrollView(getContext());
@@ -136,11 +133,10 @@ public class AlbumSheet extends FrameLayout {
         LinearLayout r = new LinearLayout(getContext());
         r.setOrientation(LinearLayout.HORIZONTAL);
         r.setGravity(Gravity.CENTER_VERTICAL);
-        TextView n = text(name, color, 10.5f);
+        Words n = text(name, color, 10.5f);
         r.addView(n, new LinearLayout.LayoutParams(0, h, 1f));
-        n.setGravity(Gravity.CENTER_VERTICAL);
-        TextView c = text(count, t.s1, 9.5f);
-        c.setGravity(Gravity.CENTER_VERTICAL);
+        Words c = text(count, t.s1, 9.5f);
+        c.setAlign(Words.END);
         r.addView(c, new LinearLayout.LayoutParams(-2, h));
         r.setOnClickListener(click);
         return r;
@@ -149,15 +145,28 @@ public class AlbumSheet extends FrameLayout {
     /** a single line to type a name, then "done" */
     void showName(String title, String initial) {
         frame();
-        TextView head = text(title, t.s1, 9);
+        Words head = text(title, t.s1, 9);
         panel.addView(head);
         field = new EditText(getContext());
         field.setText(initial);
         field.setSelection(initial.length());
         field.setTextColor(t.text);
         field.setHintTextColor(t.s2);
-        field.setTypeface(L.font(getContext()));
-        field.setTextSize(TypedValue.COMPLEX_UNIT_PX, 11 * dp * textScale);
+        // typing in the face where a real font can do it (the block face is drawn, so plain there)
+        float fs = 11 * dp * textScale;
+        int face = Heading.face();
+        if (face == Heading.ALAGARD) {
+            field.setTypeface(Heading.alagard(getContext()));
+            fs = Heading.alagardSize(fs);
+        } else if (face == Heading.CAPS) {
+            field.setTypeface(L.fontBold(getContext()));
+            field.setAllCaps(true);
+            field.setLetterSpacing(0.14f);
+            fs *= 0.9f;
+        } else {
+            field.setTypeface(L.font(getContext()));
+        }
+        field.setTextSize(TypedValue.COMPLEX_UNIT_PX, fs);
         field.setSingleLine(true);
         field.setInputType(InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_FLAG_CAP_SENTENCES);
         field.setImeOptions(EditorInfo.IME_ACTION_DONE);
@@ -180,8 +189,8 @@ public class AlbumSheet extends FrameLayout {
         LinearLayout buttons = new LinearLayout(getContext());
         buttons.setGravity(Gravity.END);
         int bh = Math.round(42 * dp * textScale);
-        TextView cancel = text("cancel", t.s1, 10.5f);
-        cancel.setGravity(Gravity.CENTER);
+        Words cancel = text("cancel", t.s1, 10.5f);
+        cancel.setAlign(Words.CENTRE);
         cancel.setPadding(p * 2, 0, p * 2, 0);
         cancel.setOnClickListener(new OnClickListener() {
             @Override
@@ -189,8 +198,8 @@ public class AlbumSheet extends FrameLayout {
                 close();
             }
         });
-        TextView ok = text("done", t.accent, 10.5f);
-        ok.setGravity(Gravity.CENTER);
+        Words ok = text("done", t.accent, 10.5f);
+        ok.setAlign(Words.CENTRE);
         ok.setPadding(p * 2, 0, p, 0);
         ok.setOnClickListener(new OnClickListener() {
             @Override

@@ -81,7 +81,8 @@ public class GridView extends View {
     private final WeakHashMap<Bitmap, BitmapShader> shaders = new WeakHashMap<>();
 
     // look
-    private boolean rounded = true, airy = true;
+    private boolean rounded = true;
+    private int space = 1;
     private int dateMode = 2;
     private boolean dateNumbers;
     private int heading;
@@ -228,7 +229,7 @@ public class GridView extends View {
                     listener.onPeek(GridView.this, items.get(eItem[en]));
                     return;
                 }
-                if (selecting) return;
+                // selecting too: the fan then acts on the selection (MainActivity decides)
                 int en = entryAt(e.getX(), e.getY());
                 if (en < 0 || eItem[en] < 0) return;
                 Media.Item it = items.get(eItem[en]);
@@ -303,12 +304,12 @@ public class GridView extends View {
     }
 
     /** Corners, air between photos, date labels and text size, all at once. */
-    void setLook(boolean rounded, boolean airy, int dateMode, boolean dateNumbers, int heading,
+    void setLook(boolean rounded, int space, int dateMode, boolean dateNumbers, int heading,
                  float textScale) {
-        boolean change = rounded != this.rounded || airy != this.airy || dateMode != this.dateMode
+        boolean change = rounded != this.rounded || space != this.space || dateMode != this.dateMode
                 || textScale != this.textScale || dateNumbers != this.dateNumbers;
         this.rounded = rounded;
-        this.airy = airy;
+        this.space = space;
         this.dateMode = dateMode;
         this.dateNumbers = dateNumbers;
         this.heading = heading;
@@ -562,8 +563,8 @@ public class GridView extends View {
 
     /** Air and corners shrink as the photos get smaller. */
     private void lookFor(int cols) {
-        if (airy) {
-            gap = Math.round((cols <= 3 ? 6f : cols <= 5 ? 4f : 2f) * dp);
+        if (space > 0) {
+            gap = Math.round(L.gapDp(space, cols) * dp);
             margin = gap;
         } else {
             gap = Math.max(1, Math.round(dp * 1.34f));
@@ -932,7 +933,7 @@ public class GridView extends View {
                     float ly = ey[e] - scrollY;
                     if (ly + labelH < 0 || ly > H) continue;
                     label.setAlpha(u < 1f ? Math.round(255 * Motion.fade(u)) : 255);
-                    float lx = ex[e] + (airy ? 3 * dp : 8 * dp);
+                    float lx = ex[e] + (space > 0 ? 3 * dp : 8 * dp);
                     Heading.draw(c, eLabel[e], heading, lx, ly + labelH * 0.56f, label);
                     continue;
                 }
@@ -1014,7 +1015,7 @@ public class GridView extends View {
 
         if (it.video && r.width() > 44 * dp) {
             String d = Media.duration(it.duration);
-            float tw = small.measureText(d);
+            float tw = Heading.measure(d, small);
             float ph = 4 * dp, pv = 2 * dp;
             float bh = small.getTextSize() + 2 * pv;
             float inset = rad > 0 ? 5 * dp : 0;
@@ -1025,7 +1026,7 @@ public class GridView extends View {
             c.drawRoundRect(right - tw - 2 * ph, bottomY - bh, right, bottomY, cr, cr, fill);
             small.setColor(t.text);
             small.setAlpha(Math.round(255 * alpha));
-            c.drawText(d, right - tw - ph, bottomY - pv - small.getTextSize() * 0.2f, small);
+            Heading.text(c, d, right - tw - ph, bottomY - pv - small.getTextSize() * 0.2f, small);
         }
     }
 

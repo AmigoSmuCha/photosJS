@@ -54,8 +54,23 @@ final class L {
         return getInt(c, "rounded", 1) == 1;
     }
 
-    static boolean airy(Context c) {
-        return getInt(c, "airy", 1) == 1;
+    /** air between photos and boards: tight, airy, breezy, adrift */
+    static final String[] SPACE_NAMES = {"tight", "airy", "breezy", "adrift"};
+
+    /** 0 tight (a hairline) .. 3 adrift; carries over the old on/off "airy" */
+    static int spacing(Context c) {
+        if (!has(c, "space")) return getInt(c, "airy", 1) == 1 ? 1 : 0;
+        return Math.max(0, Math.min(SPACE_NAMES.length - 1, getInt(c, "space", 1)));
+    }
+
+    /** the air at one spacing step, for photos this many columns across */
+    static float gapDp(int space, int cols) {
+        switch (space) {
+            case 0: return 0;
+            case 2: return cols <= 3 ? 11f : cols <= 5 ? 7f : 4f;
+            case 3: return cols <= 3 ? 18f : cols <= 5 ? 12f : 6f;
+            default: return cols <= 3 ? 6f : cols <= 5 ? 4f : 2f;
+        }
     }
 
     static final String[] DATE_NAMES = {"auto", "by day", "by month", "by year", "off"};
