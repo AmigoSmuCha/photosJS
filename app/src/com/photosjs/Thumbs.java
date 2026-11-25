@@ -180,6 +180,23 @@ final class Thumbs {
         }, 16);
     }
 
+    /**
+     * After photosJS itself changed a photo: its new thumbnails, made from the
+     * new picture, so nothing shows the old one while Android catches up.
+     * Runs off the main thread.
+     */
+    void seed(Media.Item it, Bitmap src) {
+        for (int b = 0; b < SIZES.length; b++) {
+            float f = Math.min(1f, SIZES[b] / (float) Math.max(src.getWidth(), src.getHeight()));
+            int w = Math.max(1, Math.round(src.getWidth() * f)), h = Math.max(1, Math.round(src.getHeight() * f));
+            Bitmap small = Bitmap.createScaledBitmap(src, w, h, true);
+            if (small == src) small = src.copy(src.getConfig(), false);
+            long k = key(it, b);
+            failed.remove(k);
+            cache.put(k, small);
+        }
+    }
+
     /** after a photo changed on disk: drop what we had of it */
     void forget(Media.Item it) {
         for (int b = 0; b < SIZES.length; b++) cache.remove(key(it, b));

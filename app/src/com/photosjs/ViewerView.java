@@ -82,6 +82,8 @@ public class ViewerView extends View {
     // the full-size pictures around the current one
     private final HashMap<Long, Bitmap> full = new HashMap<>();
     private final Set<Long> loading = new HashSet<>();
+    // bumped when a photo is replaced, so a decode of the old file that is still running is dropped
+    private final HashMap<Long, Integer> gen = new HashMap<>();
     private final ExecutorService decoder = Executors.newSingleThreadExecutor();
     private final Handler main = new Handler(Looper.getMainLooper());
 
@@ -393,6 +395,7 @@ public class ViewerView extends View {
             final Media.Item it = items.get(i);
             if (it.video || full.containsKey(it.key()) || loading.contains(it.key())) continue;
             loading.add(it.key());
+            final Integer started = gen.get(it.key());
             decoder.execute(new Runnable() {
                 @Override
                 public void run() {
@@ -421,7 +424,9 @@ public class ViewerView extends View {
                         @Override
                         public void run() {
                             loading.remove(it.key());
-                            if (got != null && open) {
+                            Integer now = gen.get(it.key());
+                            boolean same = now == null ? started == null : now.equals(started);
+                            if (got != null && open && same) {
                                 full.put(it.key(), got);
                                 invalidate();
                             }
@@ -430,6 +435,23 @@ public class ViewerView extends View {
                 }
             });
         }
+    }
+
+    /** The photo was changed (saved over): show the new picture right away. */
+    void replace(Media.Item it, Bitmap b) {
+        Integer g = gen.get(it.key());
+        gen.put(it.key(), g == null ? 1 : g + 1);
+        loading.remove(it.key());
+        Bitmap old = full.put(it.key(), b);
+        if (old != null && old != b && old.getConfig() != Bitmap.Config.HARDWARE) old.recycle();
+        // the same photo object may sit in this list: its shape may have changed with a crop
+        for (Media.Item x : items) {
+            if (x.key() == it.key()) {
+                x.w = it.w;
+                x.h = it.h;
+            }
+        }
+        invalidate();
     }
 
     private Bitmap bitmapFor(Media.Item it) {

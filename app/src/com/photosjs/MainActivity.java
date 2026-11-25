@@ -89,6 +89,8 @@ public class MainActivity extends Activity implements GridView.Listener, FolderV
     private GridView holdGrid;
     private boolean renaming;
     private List<Media.Item> trashing = new ArrayList<>();
+    // photos photosJS just saved over: their new size, until Android has re-read them
+    private final Map<Long, long[]> fresh = new HashMap<>();
 
     @Override
     protected void onCreate(Bundle saved) {
@@ -362,7 +364,15 @@ public class MainActivity extends Activity implements GridView.Listener, FolderV
                         loadedOnce = true;
                         all = list;
                         byKey.clear();
-                        for (Media.Item it : all) byKey.put(it.key(), it);
+                        long now = System.currentTimeMillis();
+                        for (Media.Item it : all) {
+                            byKey.put(it.key(), it);
+                            long[] f = fresh.get(it.key());
+                            if (f != null && now - f[2] < 30000) {
+                                it.w = (int) f[0];
+                                it.h = (int) f[1];
+                            }
+                        }
                         hiddenKeys = hid;
                         albums = al;
                         thumbs.clearFailures();
@@ -1304,7 +1314,22 @@ public class MainActivity extends Activity implements GridView.Listener, FolderV
                 } catch (Throwable e) {
                     err = e.getClass().getSimpleName();
                 }
+                // what the viewer and the thumbnails show from now on: the new picture
+                Bitmap forViewer = null;
+                final int newW = out.getWidth(), newH = out.getHeight();
+                if (err == null) {
+                    try {
+                        thumbs.seed(it, out);
+                        float f = Math.min(1f, 2400f / Math.max(newW, newH));
+                        forViewer = f < 1f
+                                ? Bitmap.createScaledBitmap(out, Math.round(newW * f), Math.round(newH * f), true)
+                                : out.copy(Bitmap.Config.ARGB_8888, false);
+                    } catch (Throwable ignored) {
+                        forViewer = null;
+                    }
+                }
                 out.recycle();
+                final Bitmap shown = forViewer;
                 final String error = err;
                 main.post(new Runnable() {
                     @Override
@@ -1313,7 +1338,17 @@ public class MainActivity extends Activity implements GridView.Listener, FolderV
                             editor.note("couldn't save (" + error + ")", 5000);
                             return;
                         }
-                        thumbs.forget(it);
+                        // a crop changes the shape: the feed and the viewer take the new one now
+                        fresh.put(it.key(), new long[] {newW, newH, System.currentTimeMillis()});
+                        Media.Item same = byKey.get(it.key());
+                        for (Media.Item x : new Media.Item[] {it, same}) {
+                            if (x == null) continue;
+                            x.w = newW;
+                            x.h = newH;
+                            x.modified = System.currentTimeMillis();
+                        }
+                        if (shown != null && viewer.isOpen()) viewer.replace(it, shown);
+                        refreshAll(GridView.KEEP);
                         editor.saved();
                         editor.close();
                         say("saved over the original; the original is kept in photosJS");
