@@ -38,6 +38,7 @@ import java.util.ArrayList;
 import java.util.Date;
 import java.util.HashMap;
 import java.util.HashSet;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
@@ -92,6 +93,12 @@ public class MainActivity extends Activity implements GridView.Listener, FolderV
     // photos photosJS just saved over: their new size, until Android has re-read them
     private final Map<Long, long[]> fresh = new HashMap<>();
 
+    // picking for another app (PickActivity): one photo with a tap, or several
+    private boolean picking, pickMany, pickImages = true, pickVideos = true;
+    private final List<String> pickTypes = new ArrayList<>();
+    private final Set<Long> chosen = new LinkedHashSet<>();     // in the order they were chosen
+    private String pickFor = "";
+
     @Override
     protected void onCreate(Bundle saved) {
         super.onCreate(saved);
@@ -102,6 +109,7 @@ public class MainActivity extends Activity implements GridView.Listener, FolderV
         thumbs = new Thumbs(getContentResolver());
         thumbs.addListener(this);
         dp = getResources().getDisplayMetrics().density;
+        if (this instanceof PickActivity) readPick();
 
         root = new FrameLayout(this);
         LinearLayout column = new LinearLayout(this);
@@ -166,6 +174,7 @@ public class MainActivity extends Activity implements GridView.Listener, FolderV
         fan.setListener(this);
         root.addView(fan, new FrameLayout.LayoutParams(-1, -1));
 
+        if (picking) setUpPicking();
         setContentView(root);
         loadAlbums();
         hasAlbums = !albums.isEmpty();
@@ -362,7 +371,7 @@ public class MainActivity extends Activity implements GridView.Listener, FolderV
                     public void run() {
                         boolean first = !loadedOnce;
                         loadedOnce = true;
-                        all = list;
+                        all = picking ? pickable(list) : list;
                         byKey.clear();
                         long now = System.currentTimeMillis();
                         for (Media.Item it : all) {
@@ -378,7 +387,8 @@ public class MainActivity extends Activity implements GridView.Listener, FolderV
                         thumbs.clearFailures();
                         if (first) top.clearMessage();
                         refreshAll(first ? GridView.TOP : GridView.KEEP);
-                        if (all.isEmpty()) top.message("no photos here yet", 600000, 0);
+                        if (all.isEmpty()) top.message(picking ? "nothing here fits what was asked for"
+                                : "no photos here yet", 600000, 0);
                         else if (first) firstHint();
                     }
                 });
@@ -388,6 +398,12 @@ public class MainActivity extends Activity implements GridView.Listener, FolderV
 
     /** One dim line about the gestures that matter, until they have been used. */
     private void firstHint() {
+        if (picking) {
+            String to = pickFor.isEmpty() ? "" : " for " + pickFor;
+            top.message(pickMany ? "choose" + to + ": tap, or drag sideways · hold to look closer"
+                    : "tap a photo to use it" + to + " · hold to look closer", 9000, 0);
+            return;
+        }
         if (L.getInt(this, "used_pinch", 0) == 1 && L.getInt(this, "used_hold", 0) == 1) return;
         top.message("pinch to resize · hold a photo for more · tap with two fingers to select", 7000, 0);
     }
@@ -429,7 +445,8 @@ public class MainActivity extends Activity implements GridView.Listener, FolderV
     }
 
     private boolean videos() {
-        return L.getInt(this, "videos", 1) == 1;
+        // picking: the request has already decided which photos and videos there are
+        return picking || L.getInt(this, "videos", 1) == 1;
     }
 
     private boolean sizes() {
@@ -575,8 +592,14 @@ public class MainActivity extends Activity implements GridView.Listener, FolderV
     /** photos, boards, albums (only once there is one), settings */
     private void setPages() {
         bar.setHasAlbums(hasAlbums);
-        if (hasAlbums) pager.setPages(photos, boards, albumsBox, settings);
-        else pager.setPages(photos, boards, settings);
+        if (picking) {
+            if (hasAlbums) pager.setPages(photos, boards, albumsBox);
+            else pager.setPages(photos, boards);
+        } else if (hasAlbums) {
+            pager.setPages(photos, boards, albumsBox, settings);
+        } else {
+            pager.setPages(photos, boards, settings);
+        }
     }
 
     private int logical(int pagerIndex) {
@@ -672,7 +695,7 @@ public class MainActivity extends Activity implements GridView.Listener, FolderV
 
     /** Selecting, in this feed, starting with this photo (if any). */
     private void startSelect(GridView g, Media.Item first) {
-        if (g == null) return;
+        if (g == null || picking) return;
         g.setSelecting(true);
         pager.setLocked(true);
         bar.setSelecting(true, 0, actionsFor(g));
@@ -686,7 +709,7 @@ public class MainActivity extends Activity implements GridView.Listener, FolderV
 
     @Override
     public void onTwoFingerTap(GridView from, Media.Item it) {
-        if (from == hiddenGrid) return;
+        if (from == hiddenGrid || picking) return;
         if (from.selecting()) exitSelect();
         else startSelect(from, it);
     }
@@ -698,6 +721,7 @@ public class MainActivity extends Activity implements GridView.Listener, FolderV
     }
 
     private void exitSelect() {
+        if (picking) return;     // picking several: every feed stays in choosing
         for (GridView g : grids()) g.setSelecting(false);
         if (!hiddenOpen) pager.setLocked(false);
         bar.setSelecting(false, 0, null);
@@ -705,6 +729,10 @@ public class MainActivity extends Activity implements GridView.Listener, FolderV
 
     @Override
     public void onSelectionChanged(GridView from, int n) {
+        if (picking) {
+            bar.setPickCount(chosen.size());
+            return;
+        }
         if (from.selecting()) bar.setSelecting(true, n, actionsFor(from));
     }
 
@@ -1098,6 +1126,11 @@ public class MainActivity extends Activity implements GridView.Listener, FolderV
 
     @Override
     public void onOpen(GridView from, Media.Item it) {
+        if (picking) {
+            if (pickMany) from.toggleKey(it.key());
+            else finishPick(one(it));
+            return;
+        }
         if (!it.video) {
             viewerFrom = from;
             from.setGhost(it.key());
@@ -1105,6 +1138,155 @@ public class MainActivity extends Activity implements GridView.Listener, FolderV
             return;
         }
         playVideo(it);
+    }
+
+    // ---- picking for another app ----
+
+    /** What the other app asked for: one or several, photos and/or videos, which types. */
+    private void readPick() {
+        Intent in = getIntent();
+        picking = true;
+        pickMany = in.getBooleanExtra(Intent.EXTRA_ALLOW_MULTIPLE, false);
+        List<String> asked = new ArrayList<>();
+        String[] extra = null;
+        try {
+            extra = in.getStringArrayExtra(Intent.EXTRA_MIME_TYPES);
+        } catch (Throwable ignored) {
+        }
+        if (extra != null) for (String x : extra) if (x != null && !x.trim().isEmpty()) asked.add(x);
+        if (asked.isEmpty()) {
+            String ty = in.resolveType(this);
+            if (ty != null) asked.add(ty);
+        }
+        boolean any = asked.isEmpty(), img = false, vid = false;
+        pickTypes.clear();
+        for (String ty : asked) {
+            String x = ty.trim().toLowerCase(Locale.US);
+            if (x.equals("vnd.android.cursor.dir/image")) x = "image/*";
+            else if (x.equals("vnd.android.cursor.dir/video")) x = "video/*";
+            if (x.equals("*/*") || x.equals("*")) {
+                any = true;
+            } else if (x.startsWith("image/")) {
+                img = true;
+                pickTypes.add(x);
+            } else if (x.startsWith("video/")) {
+                vid = true;
+                pickTypes.add(x);
+            }
+        }
+        if (any) {
+            pickTypes.clear();
+            img = true;
+            vid = true;
+        }
+        pickImages = img;
+        // videos: when they were asked for, and either the feed shows them or only videos were asked for
+        pickVideos = vid && (L.getInt(this, "videos", 1) == 1 || !img);
+        pickFor = callerName();
+    }
+
+    private String callerName() {
+        String pkg = getCallingPackage();
+        if (pkg == null || pkg.equals(getPackageName())) return "";
+        try {
+            PackageManager pm = getPackageManager();
+            return pm.getApplicationLabel(pm.getApplicationInfo(pkg, 0)).toString();
+        } catch (Throwable e) {
+            return "";
+        }
+    }
+
+    private void setUpPicking() {
+        bar.setPicking(pickMany);
+        for (GridView g : grids()) {
+            g.setPeek(true);
+            if (pickMany) {
+                g.shareSelection(chosen);
+                g.setSelecting(true);
+            }
+        }
+        albumBoards.setHoldable(false);
+        viewer.setActions(pickMany ? new String[] {"choose", "use"} : new String[] {"use"});
+        // picking several, a sideways drag chooses; the bar moves between pages
+        if (pickMany) pager.setLocked(true);
+        setResult(RESULT_CANCELED);
+    }
+
+    private boolean pickable(Media.Item it) {
+        if (it.video ? !pickVideos : !pickImages) return false;
+        if (pickTypes.isEmpty()) return true;
+        String m = it.mime == null || it.mime.isEmpty() ? (it.video ? "video/*" : "image/*")
+                : it.mime.toLowerCase(Locale.US);
+        for (String p : pickTypes) {
+            if (p.endsWith("/*") ? m.startsWith(p.substring(0, p.length() - 1)) : p.equals(m)) return true;
+        }
+        return false;
+    }
+
+    private List<Media.Item> pickable(List<Media.Item> list) {
+        List<Media.Item> out = new ArrayList<>();
+        for (Media.Item it : list) if (pickable(it)) out.add(it);
+        return out;
+    }
+
+    private static List<Media.Item> one(Media.Item it) {
+        List<Media.Item> l = new ArrayList<>();
+        l.add(it);
+        return l;
+    }
+
+    /** the chosen photos that still exist, in the order they were chosen */
+    private List<Media.Item> chosenItems() {
+        List<Media.Item> out = new ArrayList<>();
+        for (long k : chosen) {
+            Media.Item it = byKey.get(k);
+            if (it != null) out.add(it);
+        }
+        return out;
+    }
+
+    /** a long press while picking: the photo, big, with "use" (and "choose") under it */
+    @Override
+    public void onPeek(GridView from, Media.Item it) {
+        if (viewer.isOpen()) return;
+        viewerFrom = from;
+        from.setGhost(it.key());
+        viewer.open(from.items(), from.indexOf(it.key()), from.screenRectOf(it.key()), from.radiusNow());
+    }
+
+    @Override
+    public boolean chosen(Media.Item it) {
+        return it != null && chosen.contains(it.key());
+    }
+
+    @Override
+    public void onPickUse() {
+        finishPick(chosenItems());
+    }
+
+    @Override
+    public void onPickCancel() {
+        setResult(RESULT_CANCELED);
+        finish();
+    }
+
+    /** Hands the photos to the app that asked: the first as the data, all of them as ClipData. */
+    private void finishPick(List<Media.Item> items) {
+        if (items.isEmpty()) return;
+        List<String> mimes = new ArrayList<>();
+        for (Media.Item it : items) {
+            String m = it.mime == null || it.mime.isEmpty() ? (it.video ? "video/*" : "image/*") : it.mime;
+            if (!mimes.contains(m)) mimes.add(m);
+        }
+        ClipData clip = new ClipData("photosJS", mimes.toArray(new String[0]),
+                new ClipData.Item(items.get(0).uri()));
+        for (int i = 1; i < items.size(); i++) clip.addItem(new ClipData.Item(items.get(i).uri()));
+        Intent out = new Intent();
+        out.setData(items.get(0).uri());
+        out.setClipData(clip);
+        out.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);
+        setResult(RESULT_OK, out);
+        finish();
     }
 
     // ---- the viewer ----
@@ -1141,6 +1323,15 @@ public class MainActivity extends Activity implements GridView.Listener, FolderV
 
     @Override
     public void onViewerAction(String action, Media.Item it) {
+        if (picking) {
+            if (action.equals("choose")) {
+                (viewerFrom != null ? viewerFrom : photos).toggleKey(it.key());
+                viewer.invalidate();
+            } else if (action.equals("use")) {
+                finishPick(pickMany && !chosen.isEmpty() ? chosenItems() : one(it));
+            }
+            return;
+        }
         List<Media.Item> one = new ArrayList<>();
         one.add(it);
         pending = one;
@@ -1361,6 +1552,7 @@ public class MainActivity extends Activity implements GridView.Listener, FolderV
 
     @Override
     public void onViewerHold(Media.Item it, RectF screen, Bitmap bm, float x, float y) {
+        if (picking) return;
         L.putInt(this, "used_hold", 1);
         holdBoard = null;
         holdGrid = null;
@@ -1469,6 +1661,13 @@ public class MainActivity extends Activity implements GridView.Listener, FolderV
     @Override
     public void onBackPressed() {
         GridView g = activeGrid();
+        if (picking) {
+            if (viewer.isOpen()) viewer.close();
+            else if (tab == TAB_FOLDERS && openFolder != null) closeFolder();
+            else if (tab == TAB_ALBUMS && openAlbum != null) closeAlbum();
+            else onPickCancel();
+            return;
+        }
         if (fan.isOpen()) {
             fan.close();
             unsay();

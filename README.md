@@ -18,6 +18,32 @@ Pinterest first:
 - **The editor** (edit in the fan or the viewer): *crop* — drag the corners or edges (the touch zones are much bigger than the marks), free or square; *draw* — one finger draws in the theme's 16 colours, two fingers zoom and move without marking, the brush keeps its size on screen. Undo every step. Saves as a copy next to the original (settings › edits save as: over the original, which is then kept inside photosJS).
 - Videos open in VLC (in the viewer, a still frame: tap it).
 
+## As a photo picker for other apps
+
+photosJS answers `ACTION_GET_CONTENT` and `ACTION_PICK` for images and videos. It opens as itself, without settings and with only what was asked for (`image/*`, `video/*`, exact types, `EXTRA_MIME_TYPES`):
+
+- **One photo**: tap it and it goes back to the app that asked. Hold a photo to look closer; "use" under it sends it. "cancel" at the right of the bar, or back, sends nothing.
+- **Several** (`EXTRA_ALLOW_MULTIPLE`): every feed is in choosing: tap photos or drag sideways across them, in the feed, a folder or an album; the bar moves between pages and ends with the count and "use". Hold a photo to look closer; "choose" or "use" under it.
+
+The answer is the usual one: the first photo as `getData()`, all of them in `getClipData()` in the order they were chosen, with read permission granted.
+
+Android's own photo picker outranks every app for a plain `GET_CONTENT` (and apps using the new picker, `PickVisualMedia`, can't be redirected at all), so an app that wants photosJS names it:
+
+```java
+Intent i = new Intent(Intent.ACTION_GET_CONTENT)
+        .addCategory(Intent.CATEGORY_OPENABLE)
+        .setType("image/*")                                // or "video/*", "*/*"
+        .putExtra(Intent.EXTRA_ALLOW_MULTIPLE, true)        // leave out for one photo
+        .setPackage("com.photosjs");
+try {
+    startActivityForResult(i, PICK);
+} catch (ActivityNotFoundException e) {
+    // photosJS isn't installed: the phone's own picker (ACTION_OPEN_DOCUMENT)
+}
+```
+
+If the app checks first whether photosJS is there, it needs `<queries><package android:name="com.photosjs" /></queries>` in its manifest. lockJS's "choose picture" works this way (a long press opens the phone's file picker instead).
+
 ## Build
 
 GitHub Actions builds every push to `main` and publishes `photosJS.apk` as a release. Locally: `bash build.sh` with the Android SDK (`ANDROID_HOME`) and a JDK 17+.

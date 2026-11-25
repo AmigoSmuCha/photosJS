@@ -16,6 +16,9 @@ import android.view.View;
  *
  * While selecting, the same bar (same height, nothing moves) shows the count,
  * what can be done with the selection, and "done".
+ *
+ * Picking for another app, there is no settings page, and the right end
+ * holds "cancel" (one photo) or the count and "use" (several).
  */
 public class BarView extends View {
     interface Listener {
@@ -24,6 +27,12 @@ public class BarView extends View {
         void onSelectDone();
 
         void onSelectAction(int action);
+
+        /** picking several for another app: send them */
+        void onPickUse();
+
+        /** picking for another app: send nothing */
+        void onPickCancel();
     }
 
     static final int P_PHOTOS = 0, P_BOARDS = 1, P_ALBUMS = 2, P_SETTINGS = 3;
@@ -51,6 +60,11 @@ public class BarView extends View {
     private final RectF[] actionRects = new RectF[8];
     private final RectF doneRect = new RectF();
 
+    // picking for another app
+    private boolean picking, pickMany, hasAlbums;
+    private int pickCount;
+    private final RectF useRect = new RectF();
+
     public BarView(Context c) {
         super(c);
         dp = getResources().getDisplayMetrics().density;
@@ -76,9 +90,36 @@ public class BarView extends View {
     }
 
     void setHasAlbums(boolean has) {
-        slots = has ? new int[] {P_PHOTOS, P_BOARDS, P_ALBUMS, P_SETTINGS}
-                : new int[] {P_PHOTOS, P_BOARDS, P_SETTINGS};
+        hasAlbums = has;
+        if (picking) {
+            slots = has ? new int[] {P_PHOTOS, P_BOARDS, P_ALBUMS} : new int[] {P_PHOTOS, P_BOARDS};
+        } else {
+            slots = has ? new int[] {P_PHOTOS, P_BOARDS, P_ALBUMS, P_SETTINGS}
+                    : new int[] {P_PHOTOS, P_BOARDS, P_SETTINGS};
+        }
         invalidate();
+    }
+
+    /** Picking for another app: no settings page; "cancel" or "use" at the right. */
+    void setPicking(boolean many) {
+        picking = true;
+        pickMany = many;
+        setHasAlbums(hasAlbums);
+    }
+
+    void setPickCount(int n) {
+        pickCount = n;
+        invalidate();
+    }
+
+    /** how much of the width the page glyphs share */
+    private float glyphsW() {
+        return picking ? getWidth() - endW() : getWidth();
+    }
+
+    /** the right end while picking */
+    private float endW() {
+        return pickMany ? text.measureText("use") + 64 * dp * scale : text.measureText("cancel") + 32 * dp;
     }
 
     /** The pager position, fractional while swiping (pages are in slot order). */
@@ -95,7 +136,7 @@ public class BarView extends View {
     }
 
     private float slotX(int i) {
-        float w = getWidth() / (float) slots.length;
+        float w = glyphsW() / (float) slots.length;
         return w * i + w / 2f;
     }
 
@@ -129,6 +170,32 @@ public class BarView extends View {
         fill.setColor(t.accent);
         float r = rounded ? mh / 2 : 0;
         c.drawRoundRect(x - mw / 2, my, x + mw / 2, my + mh, r, r, fill);
+        if (picking) drawEnd(c);
+    }
+
+    /** picking: "cancel", or the count in the lamp colour, then "use" */
+    private void drawEnd(Canvas c) {
+        float h = getHeight();
+        useRect.set(getWidth() - endW(), 0, getWidth(), h);
+        float base = h / 2f + text.getTextSize() * 0.36f;
+        if (!pickMany) {
+            int col = pressed == 98 ? Theme.mix(t.s1, t.plate, 0.4f) : t.s1;
+            text.setColor(col);
+            c.drawText("cancel", useRect.right - 16 * dp - text.measureText("cancel"), base, text);
+            return;
+        }
+        boolean any = pickCount > 0;
+        String n = String.valueOf(pickCount);
+        Heading.style(head, getContext(), heading, 10.5f * dp * scale);
+        head.setColor(any ? t.accent : t.s2);
+        float nw = Heading.width(n, heading, head);
+        float uw = text.measureText("use");
+        float x = useRect.right - 16 * dp - uw - 8 * dp - nw;
+        Heading.draw(c, n, heading, x, h / 2f, head);
+        int col = any ? t.text : t.s2;
+        if (pressed == 98) col = Theme.mix(col, t.plate, 0.4f);
+        text.setColor(col);
+        c.drawText("use", useRect.right - 16 * dp - uw, base, text);
     }
 
     private void drawSelecting(Canvas c) {
@@ -213,7 +280,8 @@ public class BarView extends View {
             }
             return -1;
         }
-        int i = (int) (x / (getWidth() / (float) slots.length));
+        if (picking && x >= getWidth() - endW()) return 98;
+        int i = (int) (x / (glyphsW() / (float) slots.length));
         return Math.max(0, Math.min(slots.length - 1, i));
     }
 
@@ -237,6 +305,9 @@ public class BarView extends View {
                     if (selecting) {
                         if (h == 99) listener.onSelectDone();
                         else if (count > 0) listener.onSelectAction(h - 100);
+                    } else if (h == 98) {
+                        if (!pickMany) listener.onPickCancel();
+                        else if (pickCount > 0) listener.onPickUse();
                     } else {
                         listener.onPage(slots[h]);
                     }

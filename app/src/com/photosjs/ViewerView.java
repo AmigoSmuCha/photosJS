@@ -57,9 +57,13 @@ public class ViewerView extends View {
         void onHoldEnd(float x, float y, boolean cancel);
 
         void playVideo(Media.Item it);
+
+        /** picking several for another app: is this photo among them? */
+        boolean chosen(Media.Item it);
     }
 
     static final String[] ACTIONS = {"album", "edit", "share", "aside", "trash", "info"};
+    private String[] actions = ACTIONS;
 
     private final float dp;
     private Theme t;
@@ -73,7 +77,7 @@ public class ViewerView extends View {
     private final Rect src = new Rect();
     private final RectF r = new RectF(), fit = new RectF(), tmp = new RectF();
     private final Path clip = new Path();
-    private final RectF[] actionRects = new RectF[ACTIONS.length];
+    private final RectF[] actionRects = new RectF[8];
 
     private List<Media.Item> items = new ArrayList<>();
     private int index;
@@ -200,6 +204,12 @@ public class ViewerView extends View {
 
     void setListener(Listener l) {
         listener = l;
+    }
+
+    /** what the bottom row offers (picking for another app offers "use", maybe "choose") */
+    void setActions(String[] a) {
+        actions = a == null || a.length == 0 ? ACTIONS : a;
+        invalidate();
     }
 
     void setLook(boolean rounded, boolean dateNumbers, float textScale) {
@@ -689,10 +699,10 @@ public class ViewerView extends View {
             return;
         }
         if (chrome > 0.5f) {
-            for (int i = 0; i < ACTIONS.length; i++) {
+            for (int i = 0; i < actions.length; i++) {
                 if (actionRects[i].contains(x, y)) {
                     performHapticFeedback(HapticFeedbackConstants.VIRTUAL_KEY);
-                    if (listener != null && current() != null) listener.onViewerAction(ACTIONS[i], current());
+                    if (listener != null && current() != null) listener.onViewerAction(actions[i], current());
                     return;
                 }
             }
@@ -867,13 +877,21 @@ public class ViewerView extends View {
         fill.setColor(t.plate);
         fill.setAlpha(Math.round(240 * chrome));
         c.drawRect(0, top, getWidth(), getHeight(), fill);
-        float each = getWidth() / (float) ACTIONS.length;
-        for (int i = 0; i < ACTIONS.length; i++) {
+        float each = getWidth() / (float) actions.length;
+        for (int i = 0; i < actions.length; i++) {
             actionRects[i].set(i * each, top, (i + 1) * each, getHeight());
-            text.setColor(t.text);
+            String label = actions[i];
+            int col = t.text;
+            if (label.equals("choose") && listener != null && listener.chosen(it)) {
+                label = "chosen";
+                col = t.accent;
+            } else if (label.equals("use")) {
+                col = t.accent;
+            }
+            text.setColor(col);
             text.setAlpha(a);
-            float tw = text.measureText(ACTIONS[i]);
-            c.drawText(ACTIONS[i], i * each + (each - tw) / 2f, top + base, text);
+            float tw = text.measureText(label);
+            c.drawText(label, i * each + (each - tw) / 2f, top + base, text);
         }
     }
 

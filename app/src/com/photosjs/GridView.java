@@ -52,6 +52,9 @@ public class GridView extends View {
 
         /** both fingers down and up again quickly, without pinching: select (it may be null) */
         void onTwoFingerTap(GridView from, Media.Item it);
+
+        /** a long press while picking for another app: a closer look */
+        void onPeek(GridView from, Media.Item it);
     }
 
     static final int[] LEVELS = {1, 2, 3, 4, 5, 6, 8};
@@ -130,7 +133,11 @@ public class GridView extends View {
 
     // selecting
     private boolean selecting;
-    private final Set<Long> selected = new HashSet<>();
+    private Set<Long> selected = new HashSet<>();
+    // picking for another app: one choice shared by every feed, kept until the end
+    private boolean sharedSel;
+    // picking: a long press opens the photo for a closer look instead of the fan
+    private boolean peek, peeked;
     private final HashMap<Long, Long> selAt = new HashMap<>();
     private int strokeState;            // 0 undecided, 1 selecting stroke, 2 scrolling
     private int strokeAnchor = -1, strokeLast = -1;
@@ -209,7 +216,19 @@ public class GridView extends View {
 
             @Override
             public void onLongPress(MotionEvent e) {
-                if (selecting || pinchedThisTouch || pinching || listener == null) return;
+                if (pinchedThisTouch || pinching || listener == null) return;
+                if (peek) {
+                    if (strokeState == 1) return;
+                    int en = entryAt(e.getX(), e.getY());
+                    if (en < 0 || eItem[en] < 0) return;
+                    peeked = true;
+                    ViewParent p = getParent();
+                    if (p != null) p.requestDisallowInterceptTouchEvent(true);
+                    performHapticFeedback(HapticFeedbackConstants.LONG_PRESS);
+                    listener.onPeek(GridView.this, items.get(eItem[en]));
+                    return;
+                }
+                if (selecting) return;
                 int en = entryAt(e.getX(), e.getY());
                 if (en < 0 || eItem[en] < 0) return;
                 Media.Item it = items.get(eItem[en]);
@@ -316,10 +335,34 @@ public class GridView extends View {
     void setSelecting(boolean on) {
         if (on == selecting) return;
         selecting = on;
-        long now = SystemClock.uptimeMillis();
-        for (Long k : selected) selAt.put(k, now);
-        selected.clear();
+        if (!sharedSel) {
+            long now = SystemClock.uptimeMillis();
+            for (Long k : selected) selAt.put(k, now);
+            selected.clear();
+        }
         invalidate();
+    }
+
+    /** Picking for another app: every feed selects into this one set, which nothing clears. */
+    void shareSelection(Set<Long> s) {
+        selected = s;
+        sharedSel = true;
+        invalidate();
+    }
+
+    /** a long press opens a closer look (onPeek) instead of the fan */
+    void setPeek(boolean on) {
+        peek = on;
+    }
+
+    boolean isSelected(long key) {
+        return selected.contains(key);
+    }
+
+    /** select or unselect one photo from outside (the viewer), and say so */
+    void toggleKey(long key) {
+        toggle(key);
+        if (listener != null) listener.onSelectionChanged(this, selected.size());
     }
 
     /** the selected photos, in the feed's order */
@@ -454,7 +497,7 @@ public class GridView extends View {
         items = list;
         this.dated = dated;
         this.byModified = byModified;
-        if (!selected.isEmpty()) {
+        if (!sharedSel && !selected.isEmpty()) {
             Set<Long> present = new HashSet<>();
             for (Media.Item it : list) present.add(it.key());
             if (selected.retainAll(present) && listener != null) {
@@ -1091,6 +1134,12 @@ public class GridView extends View {
                 lastScrollAt = SystemClock.uptimeMillis();
                 invalidate();
             }
+            return true;
+        }
+        if (act == MotionEvent.ACTION_DOWN) peeked = false;
+        if (peeked) {
+            // the rest of the touch that opened a closer look
+            if (act == MotionEvent.ACTION_UP || act == MotionEvent.ACTION_CANCEL) peeked = false;
             return true;
         }
         if (holding) {
