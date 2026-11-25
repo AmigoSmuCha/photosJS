@@ -807,7 +807,7 @@ public class MainActivity extends Activity implements GridView.Listener, FolderV
     private void say(String text, long ms, int color, Runnable undo) {
         if (editor.isOpen()) editor.note(text, ms);
         else if (viewer.isOpen()) viewer.note(text, ms, undo);
-        else say(text, ms, color, undo);
+        else top.message(text, ms, color, undo);
     }
 
     private void say(String text, long ms, int color) {
@@ -816,7 +816,7 @@ public class MainActivity extends Activity implements GridView.Listener, FolderV
 
     private void unsay() {
         if (viewer.isOpen()) viewer.clearNote();
-        else unsay();
+        else top.clearMessage();
     }
 
     // ---- actions ----
