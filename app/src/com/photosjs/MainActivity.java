@@ -1848,7 +1848,7 @@ public class MainActivity extends Activity implements GridView.Listener, FolderV
                 applyLook(true);
             }
         });
-        r.add(new Row("font", "every word in the app: plain, blocks, alagard or spaced caps") {
+        r.add(new Row("font", "every word in the app: plain, blocks, alagard, spaced caps or thin blocks") {
             @Override
             public String value() {
                 return Heading.NAMES[L.heading(MainActivity.this)];

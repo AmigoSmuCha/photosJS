@@ -18,6 +18,10 @@ import java.util.Locale;
  *   blocks      - lockJS's block face
  *   alagard     - Hewett Tsoi's gothic pixel font (ASCII only: accents dropped)
  *   spaced caps - bold capitals with air between the letters
+ *   thin blocks - the block face three blocks wide (the user's ITHACA)
+ *
+ * In the blocks face a line that doesn't fit its room is written in the
+ * thin blocks before anything is cut (BlockFont.fitAuto).
  *
  * Views keep their paints set up for plain text (typeface, size, colour) and
  * write through text() / measure() / fitText() / wrap(), which take the same
@@ -26,8 +30,8 @@ import java.util.Locale;
  * a view has already styled itself (headings).
  */
 final class Heading {
-    static final int PLAIN = 0, BLOCKS = 1, ALAGARD = 2, CAPS = 3;
-    static final String[] NAMES = {"plain", "blocks", "alagard", "spaced caps"};
+    static final int PLAIN = 0, BLOCKS = 1, ALAGARD = 2, CAPS = 3, THIN = 4;
+    static final String[] NAMES = {"plain", "blocks", "alagard", "spaced caps", "thin blocks"};
 
     private static Typeface alagard;
     private static Context app;
@@ -58,9 +62,15 @@ final class Heading {
         return face;
     }
 
+    /** drawn square by square (BlockFont), not with a typeface */
+    static boolean blocks(int style) {
+        return style == BLOCKS || style == THIN;
+    }
+
     /** the words as this face writes them */
     static String text(String s, int style) {
         if (style == CAPS) return s.toUpperCase(Locale.ROOT);
+        if (style == THIN) return BlockFont.thin(s);
         if (style == ALAGARD) {
             return Normalizer.normalize(s, Normalizer.Form.NFD).replaceAll("\\p{M}", "");
         }
@@ -100,14 +110,14 @@ final class Heading {
 
     static float width(String s, int style, Paint p) {
         String t = text(s, style);
-        if (style == BLOCKS) return BlockFont.width(t, BlockFont.block(p.getTextSize()));
+        if (blocks(style)) return BlockFont.width(t, BlockFont.block(p.getTextSize()));
         return p.measureText(t);
     }
 
     /** Draws with the text's middle on cy. */
     static void draw(Canvas c, String s, int style, float x, float cy, Paint p) {
         String t = text(s, style);
-        if (style == BLOCKS) {
+        if (blocks(style)) {
             BlockFont.draw(c, t, x, cy, BlockFont.block(p.getTextSize()), p);
         } else {
             float base = cy + p.getTextSize() * (style == ALAGARD ? 0.3f : 0.36f);
@@ -118,7 +128,8 @@ final class Heading {
     /** Shortened to fit the room. */
     static String fit(String s, int style, Paint p, float room) {
         String t = text(s, style);
-        if (style == BLOCKS) return BlockFont.fit(t, BlockFont.block(p.getTextSize()), Math.max(0, room));
+        if (style == BLOCKS) return BlockFont.fitAuto(t, BlockFont.block(p.getTextSize()), Math.max(0, room));
+        if (style == THIN) return BlockFont.fit(t, BlockFont.block(p.getTextSize()), Math.max(0, room));
         TextPaint tp = p instanceof TextPaint ? (TextPaint) p : new TextPaint(p);
         return TextUtils.ellipsize(t, tp, Math.max(0, room), TextUtils.TruncateAt.END).toString();
     }
@@ -152,7 +163,7 @@ final class Heading {
         float size = p.getTextSize();
         float cy = baseline - size * 0.36f;
         String t = text(s, face);
-        if (face == BLOCKS) {
+        if (blocks(face)) {
             BlockFont.draw(c, t, x, cy, BlockFont.block(size), p);
             return;
         }
@@ -166,7 +177,7 @@ final class Heading {
         if (s == null || s.isEmpty()) return 0;
         if (face == PLAIN || app == null) return p.measureText(s);
         String t = text(s, face);
-        if (face == BLOCKS) return BlockFont.width(t, BlockFont.block(p.getTextSize()));
+        if (blocks(face)) return BlockFont.width(t, BlockFont.block(p.getTextSize()));
         return faced(p).measureText(t);
     }
 
@@ -179,38 +190,67 @@ final class Heading {
             return TextUtils.ellipsize(s, tp, room, TextUtils.TruncateAt.END).toString();
         }
         String t = text(s, face);
-        if (face == BLOCKS) return BlockFont.fit(t, BlockFont.block(p.getTextSize()), room);
+        if (face == BLOCKS) return BlockFont.fitAuto(t, BlockFont.block(p.getTextSize()), room);
+        if (face == THIN) return BlockFont.fit(t, BlockFont.block(p.getTextSize()), room);
         return TextUtils.ellipsize(t, faced(p), room, TextUtils.TruncateAt.END).toString();
     }
 
-    /** Broken into lines that fit, at spaces, at most maxLines (the last one shortened). */
+    /**
+     * Broken into lines that fit, at spaces, at most maxLines (the last one
+     * shortened). In the blocks face, if that would cut words off, the thin
+     * blocks are tried before anything is cut.
+     */
     static List<String> wrap(String s, Paint p, float room, int maxLines) {
         List<String> out = new ArrayList<>();
         if (s == null || s.isEmpty()) return out;
+        if (wrapInto(out, s, p, room, maxLines, false) || face != BLOCKS) return out;
+        List<String> thin = new ArrayList<>();
+        wrapInto(thin, s, p, room, maxLines, true);
+        return thin;
+    }
+
+    /** true when everything fitted without cutting */
+    private static boolean wrapInto(List<String> out, String s, Paint p, float room, int maxLines,
+                                    boolean thin) {
         String[] words = s.split(" ");
         StringBuilder line = new StringBuilder();
         int i = 0;
         while (i < words.length) {
             String w = words[i];
             String tryLine = line.length() == 0 ? w : line + " " + w;
-            if (measure(tryLine, p) <= room || line.length() == 0) {
+            if (measure(mark(tryLine, thin), p) <= room || line.length() == 0) {
                 line.setLength(0);
                 line.append(tryLine);
                 i++;
                 continue;
             }
             if (out.size() == maxLines - 1) break;
-            out.add(line.toString());
+            out.add(mark(line.toString(), thin));
             line.setLength(0);
         }
         if (i < words.length) {
             // more than fits: the last line takes the rest, shortened
             StringBuilder rest = new StringBuilder(line);
             for (int k = i; k < words.length; k++) rest.append(' ').append(words[k]);
-            out.add(fitText(rest.toString(), p, room));
-        } else if (line.length() > 0) {
-            out.add(measure(line.toString(), p) <= room ? line.toString() : fitText(line.toString(), p, room));
+            out.add(cut(mark(rest.toString(), thin), p, room));
+            return false;
         }
-        return out;
+        String last = mark(line.toString(), thin);
+        if (measure(last, p) <= room) {
+            out.add(last);
+            return true;
+        }
+        out.add(cut(last, p, room));
+        return false;
+    }
+
+    private static String mark(String s, boolean thin) {
+        return thin ? BlockFont.thin(s) : s;
+    }
+
+    /** shortened, without the blocks face's own thinning (wrap has decided that) */
+    private static String cut(String s, Paint p, float room) {
+        if (face == BLOCKS) return BlockFont.fit(s, BlockFont.block(p.getTextSize()), Math.max(0, room));
+        return fitText(s, p, room);
     }
 }

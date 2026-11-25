@@ -80,7 +80,7 @@ final class L {
         return getInt(c, "datenum", 0) == 1;
     }
 
-    /** the face for headings: Heading.PLAIN, BLOCKS, ALAGARD or CAPS */
+    /** the app's font: Heading.PLAIN, BLOCKS, ALAGARD, CAPS or THIN */
     static int heading(Context c) {
         if (!has(c, "heading")) return getInt(c, "blocks", 0) == 1 ? Heading.BLOCKS : Heading.PLAIN;
         return Math.max(0, Math.min(Heading.NAMES.length - 1, getInt(c, "heading", 0)));
