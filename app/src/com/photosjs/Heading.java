@@ -78,9 +78,9 @@ final class Heading {
     }
 
     /**
-     * Sets the paint up for this face from a plain size. Alagard is a 16 px
-     * pixel font: it is drawn at whole multiples of 16 px, without smoothing,
-     * so its pixels stay square.
+     * Sets the paint up for this face from a plain size. Alagard is a pixel
+     * font: drawn without smoothing so its pixels stay sharp, at the real size
+     * (every text size step shows; a few pixels come out a pixel wider).
      */
     static void style(Paint p, Context c, int style, float plainSize) {
         switch (style) {
@@ -105,7 +105,7 @@ final class Heading {
     }
 
     static float alagardSize(float plainSize) {
-        return Math.max(16f, Math.round(plainSize * 1.1f / 16f) * 16f);
+        return Math.max(10f, Math.round(plainSize));
     }
 
     static float width(String s, int style, Paint p) {

@@ -28,6 +28,9 @@ import java.util.Set;
  * The device folders as boards, the way Pinterest shows them: a collage of
  * the folder's newest photos (one large, two small), the name, and how many
  * photos (and, if wanted, how much space). Pinch for bigger or smaller boards.
+ *
+ * Arranging (albums): hold a board and it lifts off and follows the finger;
+ * the others make room; near the top or bottom edge the page moves along.
  */
 public class FolderView extends View {
     interface Listener {
@@ -41,6 +44,9 @@ public class FolderView extends View {
         void onHoldMove(float x, float y);
 
         void onHoldEnd(float x, float y, boolean cancel);
+
+        /** arranging: a board was put down; the boards in their new order */
+        void onArranged(List<Media.Folder> order);
     }
 
     static final int[] LEVELS = {1, 2, 3};
@@ -74,6 +80,15 @@ public class FolderView extends View {
     // morph when the board size changes
     private HashMap<Long, RectF> from = new HashMap<>();
     private long morphStart = -1, morphMs;
+    // resizing in the ripple style: boards move in a wave from the fingers
+    private boolean rippleStyle = true, rippling;
+    private float rippleX, rippleY, rippleMax = 1f;
+    // arranging by hand
+    private boolean arranging;
+    private int drag = -1;                       // the board that follows the finger
+    private float dragX, dragY, grabX, grabY;    // the finger, and where it holds the cover
+    private long liftAt;
+    private final Paint outline = new Paint(Paint.ANTI_ALIAS_FLAG);
 
     public FolderView(Context c) {
         super(c);
@@ -107,7 +122,7 @@ public class FolderView extends View {
 
             @Override
             public boolean onSingleTapUp(MotionEvent e) {
-                if (stoppedFling || pinchedThisTouch) return true;
+                if (stoppedFling || pinchedThisTouch || arranging) return true;
                 int i = indexAt(e.getX(), e.getY());
                 if (i >= 0 && listener != null) listener.onOpenFolder(folders.get(i));
                 return true;
@@ -118,6 +133,10 @@ public class FolderView extends View {
                 if (!holdable || pinchedThisTouch || pinching || listener == null) return;
                 int i = indexAt(e.getX(), e.getY());
                 if (i < 0) return;
+                if (arranging) {
+                    lift(i, e.getX(), e.getY());
+                    return;
+                }
                 coverRect(i, r);
                 r.offset(0, -scrollY);
                 int[] loc = new int[2];
@@ -203,10 +222,108 @@ public class FolderView extends View {
     }
 
     void setFolders(List<Media.Folder> list, boolean sizes, boolean toTop) {
+        drag = -1;
         folders = list;
         showSizes = sizes;
         if (toTop) scrollY = 0;
         scrollY = clamp(scrollY);
+        invalidate();
+    }
+
+    // ---- arranging ----
+
+    void setRipple(boolean on) {
+        rippleStyle = on;
+    }
+
+    void setArranging(boolean on) {
+        arranging = on;
+        if (!on && drag >= 0) putDown();
+        invalidate();
+    }
+
+    boolean arranging() {
+        return arranging;
+    }
+
+    private void lift(int i, float x, float y) {
+        coverRect(i, r);
+        r.offset(0, -scrollY);
+        drag = i;
+        grabX = x - r.left;
+        grabY = y - r.top;
+        dragX = x;
+        dragY = y;
+        liftAt = SystemClock.uptimeMillis();
+        scroller.forceFinished(true);
+        ViewParent p = getParent();
+        if (p != null) p.requestDisallowInterceptTouchEvent(true);
+        performHapticFeedback(HapticFeedbackConstants.LONG_PRESS);
+        invalidate();
+    }
+
+    /** the place under the middle of the lifted board */
+    private int slotAt() {
+        int c = cols();
+        float cx = dragX - grabX + cardW() / 2f, cy = dragY - grabY + coverH() / 2f + scrollY;
+        int col = (int) Math.floor((cx - margin()) / (cardW() + gap()));
+        int row = (int) Math.floor((cy - margin()) / (rowH() + gap()));
+        col = Math.max(0, Math.min(c - 1, col));
+        row = Math.max(0, row);
+        return Math.max(0, Math.min(folders.size() - 1, row * c + col));
+    }
+
+    /** where board i is drawn right now (screen), mid-move included */
+    private void drawnRect(int i, long now, RectF out) {
+        coverRect(i, out);
+        out.offset(0, -scrollY);
+        if (morphStart < 0) return;
+        float u = Math.min(1f, (now - morphStart) / (float) Math.max(1, morphMs));
+        RectF o = from.get(folders.get(i).bucket);
+        if (o == null) return;
+        float e = Motion.ease(u);
+        out.set(o.left + (out.left - o.left) * e, o.top + (out.top - o.top) * e,
+                o.right + (out.right - o.right) * e, o.bottom + (out.bottom - o.bottom) * e);
+    }
+
+    /** the lifted board takes place k; the rest slide to make room */
+    private void moveTo(int k) {
+        if (drag < 0 || k == drag) return;
+        long now = SystemClock.uptimeMillis();
+        HashMap<Long, RectF> old = new HashMap<>();
+        for (int i = 0; i < folders.size(); i++) {
+            if (i == drag) continue;
+            RectF o = new RectF();
+            drawnRect(i, now, o);
+            old.put(folders.get(i).bucket, o);
+        }
+        Media.Folder f = folders.remove(drag);
+        folders.add(k, f);
+        drag = k;
+        rippling = false;
+        from = old;
+        morphMs = Motion.ms(260);
+        morphStart = morphMs > 0 ? now : -1;
+        performHapticFeedback(HapticFeedbackConstants.CLOCK_TICK);
+    }
+
+    private void putDown() {
+        if (drag < 0) return;
+        long now = SystemClock.uptimeMillis();
+        HashMap<Long, RectF> old = new HashMap<>();
+        for (int i = 0; i < folders.size(); i++) {
+            RectF o = new RectF();
+            if (i == drag) o.set(dragX - grabX, dragY - grabY, dragX - grabX + cardW(), dragY - grabY + coverH());
+            else drawnRect(i, now, o);
+            old.put(folders.get(i).bucket, o);
+        }
+        drag = -1;
+        rippling = false;
+        from = old;
+        morphMs = Motion.ms(300);
+        morphStart = morphMs > 0 ? now : -1;
+        performHapticFeedback(HapticFeedbackConstants.CLOCK_TICK);
+        if (listener != null) listener.onArranged(new ArrayList<>(folders));
         invalidate();
     }
 
@@ -304,10 +421,17 @@ public class FolderView extends View {
             scrollY = clamp(scrollY);
         }
         cum = 1f;
-        morphMs = Motion.ms(420);
+        rippling = rippleStyle && Motion.ms(420) > 0;
+        morphMs = Motion.ms(rippling ? 700 : 420);
         if (morphMs > 0) {
             from = old;
             morphStart = SystemClock.uptimeMillis();
+            rippleX = focusX;
+            rippleY = focusY;
+            rippleMax = (float) Math.hypot(getWidth(), getHeight()) * 0.5f;
+            for (RectF o : old.values()) {
+                rippleMax = Math.max(rippleMax, (float) Math.hypot(o.centerX() - focusX, o.centerY() - focusY));
+            }
         }
         performHapticFeedback(HapticFeedbackConstants.CLOCK_TICK);
         if (listener != null) listener.onBoardColumnsChanged(cols());
@@ -333,31 +457,83 @@ public class FolderView extends View {
                 u = 1f;
                 morphStart = -1;
                 from = new HashMap<>();
+                rippling = false;
             } else {
                 again = true;
             }
         }
         float e = Motion.ease(u);
+        if (drag >= 0) {
+            // near the top or bottom edge the page moves along under the lifted board
+            float zone = 56 * dp, v = 0;
+            if (dragY < zone) v = -(zone - dragY) / zone;
+            else if (dragY > getHeight() - zone) v = (dragY - (getHeight() - zone)) / zone;
+            if (v != 0) {
+                float before = scrollY;
+                scrollY = clamp(scrollY + v * 14 * dp);
+                if (scrollY != before) moveTo(slotAt());
+                again = true;
+            }
+        }
         int bucket = Thumbs.bucketFor(cardW() * 0.7f);
         int placeholder = Theme.mix(t.bg, t.plate, 0.7f);
         float rad = radius();
         if (thumbs != null) thumbs.frameStart();
+        outline.setStyle(Paint.Style.STROKE);
+        outline.setStrokeWidth(Math.max(1, Math.round(dp)));
+        outline.setColor(t.s2);
         for (int i = 0; i < folders.size(); i++) {
+            if (i == drag) continue;
             Media.Folder f = folders.get(i);
             coverRect(i, r);
             r.offset(0, -scrollY);
             float alpha = 1f;
             if (u < 1f) {
                 RectF o = from.get(f.bucket);
-                if (o != null) {
-                    r.set(o.left + (r.left - o.left) * e, o.top + (r.top - o.top) * e,
-                            o.right + (r.right - o.right) * e, o.bottom + (r.bottom - o.bottom) * e);
-                } else {
-                    alpha = Motion.fade(u);
+                float ub = u;
+                if (rippling) {
+                    // a wave from the fingers: further boards start later, and dim as it passes
+                    float cx = o != null ? o.centerX() : r.centerX(), cy = o != null ? o.centerY() : r.centerY();
+                    float d = Math.min(1f, (float) Math.hypot(cx - rippleX, cy - rippleY) / rippleMax);
+                    ub = Math.max(0f, Math.min(1f, (u - 0.4f * d) / 0.6f));
                 }
+                float eb = rippling ? Motion.ease(ub) : e;
+                if (o != null) {
+                    r.set(o.left + (r.left - o.left) * eb, o.top + (r.top - o.top) * eb,
+                            o.right + (r.right - o.right) * eb, o.bottom + (r.bottom - o.bottom) * eb);
+                } else {
+                    alpha = Motion.fade(ub);
+                }
+                if (rippling && ub > 0f && ub < 1f) alpha *= 1f - 0.5f * (float) Math.sin(Math.PI * ub);
             }
             if (r.bottom + capH() < 0 || r.top > getHeight()) continue;
             again |= drawBoard(c, f, r, rad, bucket, placeholder, alpha, now);
+            if (arranging) {
+                // every board shows it can be picked up: a fine line round its cover
+                piece.set(r);
+                piece.inset(-2 * dp, -2 * dp);
+                c.drawRoundRect(piece, rad + 2 * dp, rad + 2 * dp, outline);
+            }
+        }
+        if (drag >= 0 && drag < folders.size()) {
+            // the lifted board, a little larger, its shadow on the ground beneath
+            long ld = Motion.ms(160);
+            float lu = ld <= 0 ? 1f : Math.min(1f, (now - liftAt) / (float) ld);
+            if (lu < 1f) again = true;
+            float sc = 1f + 0.05f * Motion.ease(lu);
+            float l = dragX - grabX, tp = dragY - grabY;
+            r.set(l, tp, l + cardW(), tp + coverH());
+            float dx = r.width() * (sc - 1f) / 2f, dy = r.height() * (sc - 1f) / 2f;
+            r.inset(-dx, -dy);
+            fill.setColor(0xff000000);
+            fill.setAlpha(Math.round(90 * lu));
+            piece.set(r);
+            piece.offset(0, 6 * dp);
+            c.drawRoundRect(piece, rad, rad, fill);
+            again |= drawBoard(c, folders.get(drag), r, rad, bucket, placeholder, 1f, now);
+            outline.setColor(t.accent);
+            outline.setStrokeWidth(Math.max(1, Math.round(1.5f * dp)));
+            c.drawRoundRect(r, rad, rad, outline);
         }
         if (thumbs != null) thumbs.frameEnd();
         if (folders.isEmpty() && !empty.isEmpty()) {
@@ -461,6 +637,18 @@ public class FolderView extends View {
 
     @Override
     public boolean onTouchEvent(MotionEvent e) {
+        if (drag >= 0) {
+            int act = e.getActionMasked();
+            if (act == MotionEvent.ACTION_MOVE) {
+                dragX = e.getX();
+                dragY = e.getY();
+                moveTo(slotAt());
+                invalidate();
+            } else if (act == MotionEvent.ACTION_UP || act == MotionEvent.ACTION_CANCEL) {
+                putDown();
+            }
+            return true;
+        }
         if (holding) {
             int act = e.getActionMasked();
             if (act == MotionEvent.ACTION_MOVE) {

@@ -45,6 +45,11 @@ final class L {
         return Math.max(0, Math.min(TEXT.length - 1, getInt(c, "text", 1)));
     }
 
+    /** bars grow with the text, a little less than it (the words grow fully) */
+    static float barScale(float textScale) {
+        return 0.6f + 0.4f * textScale;
+    }
+
     static float textScale(Context c) {
         return TEXT[textIndex(c)];
     }

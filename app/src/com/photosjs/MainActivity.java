@@ -30,6 +30,7 @@ import android.widget.ImageView;
 import android.widget.LinearLayout;
 
 import java.io.File;
+import java.io.FileInputStream;
 import java.io.FileOutputStream;
 import java.io.InputStream;
 import java.io.OutputStream;
@@ -71,6 +72,8 @@ public class MainActivity extends Activity implements GridView.Listener, FolderV
     private EditorView editor;
     private Bitmap overwriteWith;
     private Media.Item overwriteItem;
+    // the original of the photo being saved over, as a copy in Android's trash
+    private Uri originalInTrash;
     private float dp;
 
     private final ExecutorService io = Executors.newSingleThreadExecutor();
@@ -79,7 +82,7 @@ public class MainActivity extends Activity implements GridView.Listener, FolderV
     private final Map<Long, Media.Item> byKey = new HashMap<>();
     private Set<Long> hiddenKeys = new HashSet<>();
     private List<Store.Album> albums = new ArrayList<>();
-    private boolean loadedOnce, asked, hasAlbums, hiddenOpen;
+    private boolean loadedOnce, asked, hasAlbums, hiddenOpen, arranging;
     private int tab = TAB_PHOTOS;
     private Media.Folder openFolder, openAlbum;
     private int photoCount, folderCount, folderItemCount, albumItemCount;
@@ -185,7 +188,7 @@ public class MainActivity extends Activity implements GridView.Listener, FolderV
         setPages();
         applyTheme();
         applyLook(false);
-        int p = pinterest();
+        int p = pinterestUpTo();
         for (GridView g : grids()) g.setPinterestUpTo(p);
         photos.setColumns(colsOf("all"));
         settings.setRows(rows());
@@ -246,6 +249,10 @@ public class MainActivity extends Activity implements GridView.Listener, FolderV
         float s = L.textScale(this);
         int dates = L.dates(this);
         for (GridView g : grids()) g.setLook(rounded, space, dates, nums, heading, s);
+        boolean ripple = L.getInt(this, "resize", 1) == 1;
+        for (GridView g : grids()) g.setRipple(ripple);
+        folderView.setRipple(ripple);
+        albumBoards.setRipple(ripple);
         folderView.setLook(rounded, space, s);
         albumBoards.setLook(rounded, space, s);
         bar.setLook(rounded, heading, s);
@@ -259,7 +266,7 @@ public class MainActivity extends Activity implements GridView.Listener, FolderV
         LinearLayout.LayoutParams tl = (LinearLayout.LayoutParams) top.getLayoutParams();
         tl.height = Math.round(27 * dp * s);
         LinearLayout.LayoutParams bl = (LinearLayout.LayoutParams) bar.getLayoutParams();
-        bl.height = Math.round(46 * dp * Math.min(1.25f, s));
+        bl.height = Math.round(46 * dp * L.barScale(s));
         if (relayoutBars) {
             top.requestLayout();
             bar.requestLayout();
@@ -397,6 +404,7 @@ public class MainActivity extends Activity implements GridView.Listener, FolderV
                         if (all.isEmpty()) top.message(picking ? "nothing here fits what was asked for"
                                 : "no photos here yet", 600000, 0);
                         else if (first) firstHint();
+                        if (first) moveKeptOriginals();
                     }
                 });
             }
@@ -407,8 +415,8 @@ public class MainActivity extends Activity implements GridView.Listener, FolderV
     private void firstHint() {
         if (picking) {
             String to = pickFor.isEmpty() ? "" : " for " + pickFor;
-            top.message(pickMany ? "choose" + to + ": tap, or drag sideways · hold to look closer"
-                    : "tap a photo to use it" + to + " · hold to look closer", 9000, 0);
+            top.message(pickMany ? "choose" + to + ": tap, or drag sideways · hold to look closer or edit"
+                    : "tap a photo to use it" + to + " · hold to look closer or edit", 9000, 0);
             return;
         }
         if (L.getInt(this, "used_pinch", 0) == 1 && L.getInt(this, "used_hold", 0) == 1) return;
@@ -436,7 +444,10 @@ public class MainActivity extends Activity implements GridView.Listener, FolderV
     }
 
     private int sortOf(String view) {
-        return L.getInt(this, "sort:" + sortKey(view), L.getInt(this, "sort:all", Media.BY_TAKEN));
+        int by = L.getInt(this, "sort:" + sortKey(view), L.getInt(this, "sort:all", Media.BY_TAKEN));
+        // by hand is for albums only
+        if (by == Media.BY_HAND && !"albums".equals(view)) by = Media.BY_TAKEN;
+        return by;
     }
 
     private boolean descOf(String view) {
@@ -460,8 +471,23 @@ public class MainActivity extends Activity implements GridView.Listener, FolderV
         return L.getInt(this, "sizes", 0) == 1;
     }
 
-    private int pinterest() {
-        return Math.max(0, Math.min(5, L.getInt(this, "pinterest", 3)));
+    /** Pinterest view: 0 off (squares), 1 on (whole photos at any size), 2 up to a threshold */
+    private static final String[] PINTEREST_NAMES = {"off", "on", "threshold"};
+
+    private int pinterestMode() {
+        if (!L.has(this, "pmode")) return L.getInt(this, "pinterest", 3) == 0 ? 0 : 1;
+        return Math.max(0, Math.min(2, L.getInt(this, "pmode", 1)));
+    }
+
+    /** the threshold: whole photos at this many columns or fewer */
+    private int pinterestThreshold() {
+        return Math.max(1, Math.min(8, L.getInt(this, "pinterest", 3)));
+    }
+
+    /** what the feeds are told: whole photos up to this many columns */
+    private int pinterestUpTo() {
+        int m = pinterestMode();
+        return m == 0 ? 0 : m == 1 ? 99 : pinterestThreshold();
     }
 
     private static boolean dated(int by) {
@@ -533,6 +559,7 @@ public class MainActivity extends Activity implements GridView.Listener, FolderV
             f.name = a.name;
             f.newestTaken = a.created;
             f.newestModified = a.created;
+            f.order = a.pos;
             for (Media.Item it : albumItems(a)) {
                 f.count++;
                 f.size += it.size;
@@ -721,8 +748,49 @@ public class MainActivity extends Activity implements GridView.Listener, FolderV
         else startSelect(from, it);
     }
 
+    // ---- arranging albums by hand ----
+
+    private void startArrange() {
+        if (tab != TAB_ALBUMS || openAlbum != null || albums.size() < 2) {
+            if (albums.size() < 2) say("one album has nothing to be arranged with");
+            return;
+        }
+        arranging = true;
+        albumBoards.setArranging(true);
+        pager.setLocked(true);
+        bar.setArranging(true);
+        say("hold an album and move it · done when they're in place", 7000, 0);
+    }
+
+    private void endArrange() {
+        if (!arranging) return;
+        arranging = false;
+        albumBoards.setArranging(false);
+        pager.setLocked(false);
+        bar.setArranging(false);
+        unsay();
+    }
+
+    @Override
+    public void onArranged(List<Media.Folder> order) {
+        List<Long> ids = new ArrayList<>();
+        for (Media.Folder f : order) ids.add(f.bucket);
+        store.setOrder(ids);
+        // arranging means the albums are now sorted by hand
+        L.putInt(this, "sort:albums", Media.BY_HAND);
+        albums = store.albums();
+        for (Media.Folder f : order) {
+            Store.Album a = album(f.bucket);
+            if (a != null) f.order = a.pos;
+        }
+    }
+
     @Override
     public void onSelectDone() {
+        if (arranging) {
+            endArrange();
+            return;
+        }
         if (hiddenOpen) closeHidden();
         else exitSelect();
     }
@@ -785,11 +853,12 @@ public class MainActivity extends Activity implements GridView.Listener, FolderV
         holdBoard = null;
         holdGrid = from;
         holdItem = it;
-        // while selecting, holding a selected photo acts on all of them
-        holdOnSelection = from.selecting() && from.isSelected(it.key());
+        // while selecting, holding a selected photo acts on all of them (picking: just that one)
+        holdOnSelection = !picking && from.selecting() && from.isSelected(it.key());
         pending = holdOnSelection ? from.selectedItems() : one(it);
         if (pending.isEmpty()) pending = one(it);
-        int[] acts = from == hiddenGrid ? new int[] {FanView.HIDE, FanView.DELETE, FanView.INFO} : fanActions();
+        int[] acts = picking ? new int[] {FanView.VIEW, FanView.EDIT, FanView.INFO, FanView.ALBUM}
+                : from == hiddenGrid ? new int[] {FanView.HIDE, FanView.DELETE, FanView.INFO} : fanActions();
         if (from.selecting()) {
             for (int i = 0; i < acts.length; i++) if (acts[i] == FanView.SELECT) acts[i] = FanView.NONE;
         }
@@ -810,7 +879,7 @@ public class MainActivity extends Activity implements GridView.Listener, FolderV
         holdOnSelection = false;
         pending = new ArrayList<>();
         Bitmap bm = f.cover != null ? thumbs.best(f.cover, 1) : null;
-        fan.open(screen, bm, radius, x, y, new int[] {FanView.RENAME, FanView.DROP_ALBUM}, false);
+        fan.open(screen, bm, radius, x, y, new int[] {FanView.RENAME, FanView.ARRANGE, FanView.DROP_ALBUM}, false);
     }
 
     @Override
@@ -862,6 +931,7 @@ public class MainActivity extends Activity implements GridView.Listener, FolderV
                 break;
             case FanView.DELETE: trash(items); break;
             case FanView.INFO: if (one != null) info(one); break;
+            case FanView.VIEW: if (one != null && holdGrid != null) onPeek(holdGrid, one); break;
             case FanView.W_HOME: if (one != null) homeWallpaper(one); break;
             case FanView.W_LOCKJS: if (one != null) toLockJS(one); break;
             case FanView.RENAME:
@@ -871,6 +941,7 @@ public class MainActivity extends Activity implements GridView.Listener, FolderV
                 }
                 break;
             case FanView.DROP_ALBUM: if (holdBoard != null) dropAlbum(holdBoard.bucket); break;
+            case FanView.ARRANGE: startArrange(); break;
         }
         // done with the selection, as the same action in the bar would be
         if (holdOnSelection && holdGrid != null && holdGrid.selecting()
@@ -1105,6 +1176,7 @@ public class MainActivity extends Activity implements GridView.Listener, FolderV
             } else {
                 overwriteWith = null;
                 editor.note("not saved", 3000);
+                dropTrashedOriginal();
             }
         } else if (code == REQ_UNTRASH && result == RESULT_OK) {
             say("back from the trash");
@@ -1240,14 +1312,14 @@ public class MainActivity extends Activity implements GridView.Listener, FolderV
     private void setUpPicking() {
         bar.setPicking(pickMany);
         for (GridView g : grids()) {
-            g.setPeek(true);
+            // a hold opens the fan (look closer, edit, info, album), so a photo can be edited first
             if (pickMany) {
                 g.shareSelection(chosen);
                 g.setSelecting(true);
             }
         }
         albumBoards.setHoldable(false);
-        viewer.setActions(pickMany ? new String[] {"choose", "use"} : new String[] {"use"});
+        viewer.setActions(pickMany ? new String[] {"edit", "choose", "use"} : new String[] {"edit", "use"});
         // picking several, a sideways drag chooses; the bar moves between pages
         if (pickMany) pager.setLocked(true);
         setResult(RESULT_CANCELED);
@@ -1365,7 +1437,9 @@ public class MainActivity extends Activity implements GridView.Listener, FolderV
     @Override
     public void onViewerAction(String action, Media.Item it) {
         if (picking) {
-            if (action.equals("choose")) {
+            if (action.equals("edit")) {
+                edit(it);
+            } else if (action.equals("choose")) {
                 (viewerFrom != null ? viewerFrom : photos).toggleKey(it.key());
                 viewer.invalidate();
             } else if (action.equals("use")) {
@@ -1417,6 +1491,7 @@ public class MainActivity extends Activity implements GridView.Listener, FolderV
             @Override
             public void run() {
                 Bitmap out = null;
+                Uri made = null;
                 String err = null;
                 try {
                     Bitmap full = android.graphics.ImageDecoder.decodeBitmap(
@@ -1438,17 +1513,21 @@ public class MainActivity extends Activity implements GridView.Listener, FolderV
                     out = editor.render(full);
                     full.recycle();
                     if (!over) {
-                        saveCopy(it, out);
+                        made = saveCopy(it, out);
                         out.recycle();
                         out = null;
                     } else {
-                        keepOriginal(it);
+                        // the original goes to Android's trash (restorable there for 30 days);
+                        // only if Android won't take it there, photosJS keeps it itself
+                        originalInTrash = trashOriginal(it);
+                        if (originalInTrash == null) keepOriginal(it);
                     }
                 } catch (Throwable e) {
                     err = e.getClass().getSimpleName();
                 }
                 final Bitmap result = out;
                 final String error = err;
+                final long madeKey = made != null ? android.content.ContentUris.parseId(made) : 0;
                 main.post(new Runnable() {
                     @Override
                     public void run() {
@@ -1459,7 +1538,7 @@ public class MainActivity extends Activity implements GridView.Listener, FolderV
                         if (!over) {
                             editor.saved();
                             editor.close();
-                            say("saved as a copy next to the original");
+                            afterSave(madeKey, "saved as a copy next to the original", null);
                             return;
                         }
                         overwriteWith = result;
@@ -1479,7 +1558,7 @@ public class MainActivity extends Activity implements GridView.Listener, FolderV
     }
 
     /** a new picture next to the original, dated like it so it sits beside it */
-    private void saveCopy(Media.Item it, Bitmap out) throws Exception {
+    private Uri saveCopy(Media.Item it, Bitmap out) throws Exception {
         String rel = relativePath(it);
         String base = it.name.contains(".") ? it.name.substring(0, it.name.lastIndexOf('.')) : it.name;
         Uri u = null;
@@ -1506,6 +1585,213 @@ public class MainActivity extends Activity implements GridView.Listener, FolderV
         android.content.ContentValues done = new android.content.ContentValues();
         done.put(MediaStore.MediaColumns.IS_PENDING, 0);
         getContentResolver().update(u, done, null, null);
+        return u;
+    }
+
+    /**
+     * What a save leaves on screen. Picking for another app, the saved photo is
+     * the one to send: chosen at once when picking several, or one tap on the
+     * message away when picking one.
+     */
+    private void afterSave(final long key, String text, Runnable undo) {
+        if (picking && key != 0) {
+            if (pickMany) {
+                chosen.add(key);
+                bar.setPickCount(chosen.size());
+                currentView().invalidate();
+                say(text + " · chosen", 5000, 0);
+            } else {
+                say(text + " · tap here to use it", 12000, 0, new Runnable() {
+                    @Override
+                    public void run() {
+                        Media.Item x = byKey.get(key);
+                        if (x != null) finishPick(one(x));
+                    }
+                });
+            }
+            load();
+            return;
+        }
+        say(text, undo != null ? 8000 : 3200, 0, undo);
+        load();
+    }
+
+    /**
+     * Before writing over a photo: a copy of the original goes into Android's
+     * trash next to it ("name_original"), hidden like everything trashed and
+     * restorable from the phone's trash for 30 days. Null if Android refuses.
+     */
+    private Uri trashOriginal(Media.Item it) {
+        return copyToTrash(it.uri(), null, it.name, it.mime, relativePath(it), it.taken);
+    }
+
+    private Uri copyToTrash(Uri fromUri, File fromFile, String name, String mime, String rel, long taken) {
+        int dot = name.lastIndexOf('.');
+        String base = dot > 0 ? name.substring(0, dot) : name;
+        String ext = dot > 0 ? name.substring(dot) : ".jpg";
+        Uri u = null;
+        for (String path : new String[] {rel, "Pictures/photosJS/"}) {
+            if (path == null) continue;
+            android.content.ContentValues v = new android.content.ContentValues();
+            v.put(MediaStore.MediaColumns.DISPLAY_NAME, base + "_original" + ext);
+            v.put(MediaStore.MediaColumns.MIME_TYPE, mime == null || mime.isEmpty() ? "image/jpeg" : mime);
+            v.put(MediaStore.MediaColumns.RELATIVE_PATH, path);
+            v.put(MediaStore.MediaColumns.IS_PENDING, 1);
+            if (taken > 0) v.put(MediaStore.MediaColumns.DATE_TAKEN, taken);
+            try {
+                u = getContentResolver().insert(
+                        MediaStore.Images.Media.getContentUri(MediaStore.VOLUME_EXTERNAL_PRIMARY), v);
+            } catch (Throwable e) {
+                u = null;
+            }
+            if (u != null) break;
+        }
+        if (u == null) return null;
+        try {
+            try (InputStream in = fromFile != null ? new FileInputStream(fromFile)
+                    : getContentResolver().openInputStream(fromUri);
+                 OutputStream os = getContentResolver().openOutputStream(u)) {
+                byte[] buf = new byte[1 << 16];
+                int n;
+                while ((n = in.read(buf)) > 0) os.write(buf, 0, n);
+            }
+            android.content.ContentValues ready = new android.content.ContentValues();
+            ready.put(MediaStore.MediaColumns.IS_PENDING, 0);
+            getContentResolver().update(u, ready, null, null);
+            android.content.ContentValues trashed = new android.content.ContentValues();
+            trashed.put(MediaStore.MediaColumns.IS_TRASHED, 1);
+            if (getContentResolver().update(u, trashed, null, null) < 1) throw new IllegalStateException("not trashed");
+            return u;
+        } catch (Throwable e) {
+            try {
+                getContentResolver().delete(u, null, null);
+            } catch (Throwable ignored) {
+            }
+            return null;
+        }
+    }
+
+    /** "tap to undo" after saving over: the original comes back out of the trash, over the edit */
+    private void restoreOriginal(final Media.Item it, final Uri orig) {
+        io.execute(new Runnable() {
+            @Override
+            public void run() {
+                String err = null;
+                Bitmap shown = null;
+                final int[] size = new int[2];
+                try {
+                    android.content.ContentValues back = new android.content.ContentValues();
+                    back.put(MediaStore.MediaColumns.IS_TRASHED, 0);
+                    try {
+                        getContentResolver().update(orig, back, null, null);
+                    } catch (Throwable ignored) {
+                    }
+                    try (InputStream in = getContentResolver().openInputStream(orig);
+                         OutputStream os = getContentResolver().openOutputStream(it.uri(), "wt")) {
+                        byte[] buf = new byte[1 << 16];
+                        int n;
+                        while ((n = in.read(buf)) > 0) os.write(buf, 0, n);
+                    }
+                    getContentResolver().delete(orig, null, null);
+                    shown = android.graphics.ImageDecoder.decodeBitmap(
+                            android.graphics.ImageDecoder.createSource(getContentResolver(), it.uri()),
+                            new android.graphics.ImageDecoder.OnHeaderDecodedListener() {
+                                @Override
+                                public void onHeaderDecoded(android.graphics.ImageDecoder d,
+                                                            android.graphics.ImageDecoder.ImageInfo info,
+                                                            android.graphics.ImageDecoder.Source s) {
+                                    d.setAllocator(android.graphics.ImageDecoder.ALLOCATOR_SOFTWARE);
+                                    int w = info.getSize().getWidth(), h = info.getSize().getHeight();
+                                    size[0] = w;
+                                    size[1] = h;
+                                    float f = Math.min(1f, 2400f / Math.max(w, h));
+                                    if (f < 1f) d.setTargetSize(Math.round(w * f), Math.round(h * f));
+                                }
+                            });
+                    thumbs.seed(it, shown);
+                } catch (Throwable e) {
+                    err = e.getClass().getSimpleName();
+                }
+                final Bitmap pic = shown;
+                final String error = err;
+                main.post(new Runnable() {
+                    @Override
+                    public void run() {
+                        if (error != null) {
+                            say("couldn't bring the original back (" + error + "); it is in the phone's trash");
+                            return;
+                        }
+                        if (size[0] > 0) {
+                            fresh.put(it.key(), new long[] {size[0], size[1], System.currentTimeMillis()});
+                            Media.Item same = byKey.get(it.key());
+                            for (Media.Item x : new Media.Item[] {it, same}) {
+                                if (x == null) continue;
+                                x.w = size[0];
+                                x.h = size[1];
+                            }
+                        }
+                        if (pic != null && viewer.isOpen()) viewer.replace(it, pic);
+                        refreshAll(GridView.KEEP);
+                        say("the original is back");
+                        load();
+                    }
+                });
+            }
+        });
+    }
+
+    /**
+     * Once: originals that earlier versions kept inside photosJS move to
+     * Android's trash, next to their photos, like every new one does.
+     */
+    private void moveKeptOriginals() {
+        if (L.getInt(this, "orig_trash", 0) == 1) return;
+        final File dir = new File(getFilesDir(), "originals");
+        final File[] files = dir.listFiles();
+        if (files == null || files.length == 0) {
+            L.putInt(this, "orig_trash", 1);
+            return;
+        }
+        final Map<Long, Media.Item> items = new HashMap<>(byKey);
+        io.execute(new Runnable() {
+            @Override
+            public void run() {
+                int moved = 0, left = 0;
+                for (File f : files) {
+                    String n = f.getName();
+                    int us = n.indexOf('_');
+                    Media.Item src = null;
+                    String name = n;
+                    if (us > 0) {
+                        name = n.substring(us + 1);
+                        try {
+                            src = items.get(Long.parseLong(n.substring(0, us)));
+                        } catch (NumberFormatException ignored) {
+                        }
+                    }
+                    String rel = src != null ? relativePath(src) : null;
+                    String mime = src != null ? src.mime : (name.toLowerCase(Locale.ROOT).endsWith(".png") ? "image/png" : "image/jpeg");
+                    Uri u = copyToTrash(null, f, name, mime, rel, src != null ? src.taken : 0);
+                    if (u != null && f.delete()) moved++;
+                    else left++;
+                }
+                final int m = moved, l = left;
+                main.post(new Runnable() {
+                    @Override
+                    public void run() {
+                        if (l == 0) {
+                            L.putInt(MainActivity.this, "orig_trash", 1);
+                            //noinspection ResultOfMethodCallIgnored
+                            dir.delete();
+                        }
+                        if (m > 0) {
+                            say(m + (m == 1 ? " original" : " originals")
+                                    + " kept in photosJS moved to the phone's trash", 6000, 0);
+                        }
+                    }
+                });
+            }
+        });
     }
 
     private String relativePath(Media.Item it) {
@@ -1529,6 +1815,22 @@ public class MainActivity extends Activity implements GridView.Listener, FolderV
             int n;
             while ((n = in.read(buf)) > 0) os.write(buf, 0, n);
         }
+    }
+
+    /** the write was refused or failed: the original's copy in the trash isn't needed */
+    private void dropTrashedOriginal() {
+        final Uri u = originalInTrash;
+        originalInTrash = null;
+        if (u == null) return;
+        io.execute(new Runnable() {
+            @Override
+            public void run() {
+                try {
+                    getContentResolver().delete(u, null, null);
+                } catch (Throwable ignored) {
+                }
+            }
+        });
     }
 
     private void writeOver() {
@@ -1568,6 +1870,7 @@ public class MainActivity extends Activity implements GridView.Listener, FolderV
                     public void run() {
                         if (error != null) {
                             editor.note("couldn't save (" + error + ")", 5000);
+                            dropTrashedOriginal();
                             return;
                         }
                         // a crop changes the shape: the feed and the viewer take the new one now
@@ -1583,8 +1886,20 @@ public class MainActivity extends Activity implements GridView.Listener, FolderV
                         refreshAll(GridView.KEEP);
                         editor.saved();
                         editor.close();
-                        say("saved over the original; the original is kept in photosJS");
-                        load();
+                        final Uri orig = originalInTrash;
+                        originalInTrash = null;
+                        if (picking) {
+                            afterSave(it.key(), "saved over the original", null);
+                        } else if (orig != null) {
+                            afterSave(0, "saved over · the original is in the trash · tap to undo", new Runnable() {
+                                @Override
+                                public void run() {
+                                    restoreOriginal(it, orig);
+                                }
+                            });
+                        } else {
+                            afterSave(0, "saved over · the original is kept in photosJS", null);
+                        }
                     }
                 });
             }
@@ -1601,7 +1916,9 @@ public class MainActivity extends Activity implements GridView.Listener, FolderV
         holdOnSelection = false;
         pending = one(it);
         int[] acts = fanActions();
-        for (int i = 0; i < acts.length; i++) if (acts[i] == FanView.SELECT) acts[i] = FanView.NONE;
+        for (int i = 0; i < acts.length; i++) {
+            if (acts[i] == FanView.SELECT || acts[i] == FanView.VIEW) acts[i] = FanView.NONE;
+        }
         fan.open(screen, bm, 0, x, y, acts, false);
     }
 
@@ -1704,7 +2021,12 @@ public class MainActivity extends Activity implements GridView.Listener, FolderV
     public void onBackPressed() {
         GridView g = activeGrid();
         if (picking) {
-            if (viewer.isOpen()) viewer.close();
+            if (fan.isOpen()) {
+                fan.close();
+                unsay();
+            } else if (sheet.isOpen()) sheet.close();
+            else if (editor.isOpen()) editor.back();
+            else if (viewer.isOpen()) viewer.close();
             else if (tab == TAB_FOLDERS && openFolder != null) closeFolder();
             else if (tab == TAB_ALBUMS && openAlbum != null) closeAlbum();
             else onPickCancel();
@@ -1715,6 +2037,8 @@ public class MainActivity extends Activity implements GridView.Listener, FolderV
             unsay();
         } else if (sheet.isOpen()) {
             sheet.close();
+        } else if (arranging) {
+            endArrange();
         } else if (editor.isOpen()) {
             editor.back();
         } else if (viewer.isOpen()) {
@@ -1779,6 +2103,7 @@ public class MainActivity extends Activity implements GridView.Listener, FolderV
     private String orderValue(String view) {
         int by = sortOf(view);
         boolean desc = descOf(view);
+        if (by == Media.BY_HAND) return "as arranged";
         if (by == Media.BY_NAME) return desc ? "z to a" : "a to z";
         if (by == Media.BY_SIZE) return desc ? "largest first" : "smallest first";
         return desc ? "newest first" : "oldest first";
@@ -1793,7 +2118,9 @@ public class MainActivity extends Activity implements GridView.Listener, FolderV
 
             @Override
             public void step(int d) {
-                L.putInt(MainActivity.this, "sort:" + view, (sortOf(view) + d + 4) % 4);
+                // albums can also be sorted by hand (hold an album › arrange albums)
+                int n = "albums".equals(view) ? 5 : 4;
+                L.putInt(MainActivity.this, "sort:" + view, (sortOf(view) + d + n) % n);
                 resort(view);
             }
         });
@@ -1805,6 +2132,10 @@ public class MainActivity extends Activity implements GridView.Listener, FolderV
 
             @Override
             public void step(int d) {
+                if (sortOf(view) == Media.BY_HAND) {
+                    say("hold an album and choose arrange albums");
+                    return;
+                }
                 L.putInt(MainActivity.this, "desc:" + view, descOf(view) ? 0 : 1);
                 resort(view);
             }
@@ -1873,6 +2204,18 @@ public class MainActivity extends Activity implements GridView.Listener, FolderV
                 Motion.load(MainActivity.this);
             }
         });
+        r.add(new Row("resize motion", "when a pinch changes the columns: a ripple from your fingers, or a plain glide") {
+            @Override
+            public String value() {
+                return L.getInt(MainActivity.this, "resize", 1) == 1 ? "ripple" : "glide";
+            }
+
+            @Override
+            public void step(int d) {
+                cycle("resize", 1, 2, d);
+                applyLook(false);
+            }
+        });
         r.add(new Row("corners", "of photos and boards") {
             @Override
             public String value() {
@@ -1900,20 +2243,43 @@ public class MainActivity extends Activity implements GridView.Listener, FolderV
         });
 
         r.add(new Head("feed"));
-        r.add(new Row("pinterest view", "whole photos at this many columns or fewer") {
+        r.add(new Row("pinterest view", "whole photos in their own shape: always, never (squares), or up to a number of columns") {
             @Override
             public String value() {
-                int p = pinterest();
-                return p == 0 ? "off" : "up to " + p + (p == 1 ? " column" : " columns");
+                return PINTEREST_NAMES[pinterestMode()];
             }
 
             @Override
             public void step(int d) {
-                int p = (pinterest() + d + 6) % 6;
-                L.putInt(MainActivity.this, "pinterest", p);
-                for (GridView g : grids()) g.setPinterestUpTo(p);
+                // on, off, threshold
+                int[] cycle = {1, 0, 2};
+                int at = 0;
+                for (int i = 0; i < cycle.length; i++) if (cycle[i] == pinterestMode()) at = i;
+                L.putInt(MainActivity.this, "pmode", cycle[(at + d + cycle.length) % cycle.length]);
+                for (GridView g : grids()) g.setPinterestUpTo(pinterestUpTo());
+                // the threshold row comes and goes with it
+                settings.setRows(rows());
             }
         });
+        if (pinterestMode() == 2) {
+            r.add(new Row("threshold", "whole photos at this many columns or fewer, squares beyond") {
+                @Override
+                public String value() {
+                    int p = pinterestThreshold();
+                    return "up to " + p + (p == 1 ? " column" : " columns");
+                }
+
+                @Override
+                public void step(int d) {
+                    int[] steps = GridView.LEVELS;
+                    int at = 0;
+                    for (int i = 0; i < steps.length; i++) if (steps[i] <= pinterestThreshold()) at = i;
+                    int next = steps[(at + d + steps.length) % steps.length];
+                    L.putInt(MainActivity.this, "pinterest", next);
+                    for (GridView g : grids()) g.setPinterestUpTo(pinterestUpTo());
+                }
+            });
+        }
         r.add(new Row("dates", "labels between photos when sorted by date") {
             @Override
             public String value() {

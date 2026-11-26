@@ -53,6 +53,8 @@ final class Media {
         long bucket;
         String name = "";
         int count;
+        /** albums: the place it was arranged to (sorting by hand) */
+        int order;
         long size;
         long newestTaken, newestModified;
         Item cover;
@@ -126,8 +128,9 @@ final class Media {
 
     // ---- sorting ----
 
-    static final int BY_TAKEN = 0, BY_MODIFIED = 1, BY_NAME = 2, BY_SIZE = 3;
-    static final String[] SORT_NAMES = {"date taken", "date modified", "name", "size"};
+    static final int BY_TAKEN = 0, BY_MODIFIED = 1, BY_NAME = 2, BY_SIZE = 3, BY_HAND = 4;
+    // "by hand" is for albums only: the order they were arranged in
+    static final String[] SORT_NAMES = {"date taken", "date modified", "name", "size", "by hand"};
 
     /** Sorts in place. descending = newest / z-a / largest first. */
     static void sort(List<Item> items, final int by, final boolean descending) {
@@ -187,6 +190,9 @@ final class Media {
             public int compare(Folder a, Folder b) {
                 int r;
                 switch (by) {
+                    case BY_HAND:
+                        r = Integer.compare(a.order, b.order);
+                        return r != 0 ? r : Long.compare(b.newestTaken, a.newestTaken);
                     case BY_MODIFIED: r = Long.compare(a.newestModified, b.newestModified); break;
                     case BY_NAME: r = a.name.compareToIgnoreCase(b.name); break;
                     case BY_SIZE: r = Long.compare(a.size, b.size); break;

@@ -23,22 +23,25 @@ final class Store extends SQLiteOpenHelper {
         long id;
         String name = "";
         long created;
+        int pos;                                      // place when arranged by hand
         final List<Long> keys = new ArrayList<>();   // newest added first
     }
 
     Store(Context c) {
-        super(c.getApplicationContext(), "photosjs.db", null, 1);
+        super(c.getApplicationContext(), "photosjs.db", null, 2);
     }
 
     @Override
     public void onCreate(SQLiteDatabase db) {
-        db.execSQL("CREATE TABLE albums (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL, created INTEGER NOT NULL)");
+        db.execSQL("CREATE TABLE albums (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL, created INTEGER NOT NULL, pos INTEGER NOT NULL DEFAULT 0)");
         db.execSQL("CREATE TABLE album_items (album INTEGER NOT NULL, item INTEGER NOT NULL, added INTEGER NOT NULL, PRIMARY KEY (album, item))");
         db.execSQL("CREATE TABLE hidden (item INTEGER PRIMARY KEY, at INTEGER NOT NULL)");
     }
 
     @Override
     public void onUpgrade(SQLiteDatabase db, int from, int to) {
+        // 2: albums can be arranged by hand
+        if (from < 2) db.execSQL("ALTER TABLE albums ADD COLUMN pos INTEGER NOT NULL DEFAULT 0");
     }
 
     // ---- albums ----
@@ -47,13 +50,14 @@ final class Store extends SQLiteOpenHelper {
         Map<Long, Album> byId = new HashMap<>();
         List<Album> out = new ArrayList<>();
         SQLiteDatabase db = getReadableDatabase();
-        Cursor c = db.rawQuery("SELECT id, name, created FROM albums ORDER BY created DESC", null);
+        Cursor c = db.rawQuery("SELECT id, name, created, pos FROM albums ORDER BY pos ASC, created DESC", null);
         try {
             while (c.moveToNext()) {
                 Album a = new Album();
                 a.id = c.getLong(0);
                 a.name = c.getString(1);
                 a.created = c.getLong(2);
+                a.pos = c.getInt(3);
                 byId.put(a.id, a);
                 out.add(a);
             }
@@ -72,11 +76,37 @@ final class Store extends SQLiteOpenHelper {
         return out;
     }
 
+    /** a new album comes first among the arranged ones */
     long createAlbum(String name) {
+        SQLiteDatabase db = getWritableDatabase();
+        int first = 0;
+        Cursor c = db.rawQuery("SELECT MIN(pos) FROM albums", null);
+        try {
+            if (c.moveToFirst() && !c.isNull(0)) first = c.getInt(0);
+        } finally {
+            c.close();
+        }
         ContentValues v = new ContentValues();
         v.put("name", name);
         v.put("created", System.currentTimeMillis());
-        return getWritableDatabase().insert("albums", null, v);
+        v.put("pos", first - 1);
+        return db.insert("albums", null, v);
+    }
+
+    /** the albums in this order, by hand */
+    void setOrder(List<Long> ids) {
+        SQLiteDatabase db = getWritableDatabase();
+        db.beginTransaction();
+        try {
+            for (int i = 0; i < ids.size(); i++) {
+                ContentValues v = new ContentValues();
+                v.put("pos", i);
+                db.update("albums", v, "id = ?", new String[] {String.valueOf(ids.get(i))});
+            }
+            db.setTransactionSuccessful();
+        } finally {
+            db.endTransaction();
+        }
     }
 
     void renameAlbum(long id, String name) {
@@ -103,6 +133,7 @@ final class Store extends SQLiteOpenHelper {
             v.put("id", a.id);
             v.put("name", a.name);
             v.put("created", a.created);
+            v.put("pos", a.pos);
             db.insertWithOnConflict("albums", null, v, SQLiteDatabase.CONFLICT_REPLACE);
             long now = System.currentTimeMillis();
             for (int i = 0; i < a.keys.size(); i++) {

@@ -38,12 +38,13 @@ public class FanView extends View {
     }
 
     // actions
-    static final int ALBUM = 0, WALLPAPER = 1, EDIT = 2, SHARE = 3, HIDE = 4, DELETE = 5, INFO = 6, SELECT = 7;
-    static final int RENAME = 20, DROP_ALBUM = 21;
+    static final int ALBUM = 0, WALLPAPER = 1, EDIT = 2, SHARE = 3, HIDE = 4, DELETE = 5, INFO = 6, SELECT = 7,
+            VIEW = 8;
+    static final int RENAME = 20, DROP_ALBUM = 21, ARRANGE = 22;
     static final int W_HOME = 30, W_LOCKJS = 31;
     static final int NONE = -1;
 
-    static final int[] PHOTO_ACTIONS = {ALBUM, SELECT, WALLPAPER, EDIT, SHARE, HIDE, DELETE, INFO};
+    static final int[] PHOTO_ACTIONS = {ALBUM, SELECT, WALLPAPER, EDIT, SHARE, HIDE, DELETE, INFO, VIEW};
 
     static String name(int a) {
         switch (a) {
@@ -55,8 +56,10 @@ public class FanView extends View {
             case SELECT: return "select";
             case DELETE: return "move to trash";
             case INFO: return "info";
+            case VIEW: return "look closer";
             case RENAME: return "rename album";
             case DROP_ALBUM: return "delete album (photos stay)";
+            case ARRANGE: return "arrange albums";
             case W_HOME: return "home screen";
             case W_LOCKJS: return "lockJS";
             default: return "none";
@@ -392,6 +395,25 @@ public class FanView extends View {
             case INFO:
                 c.drawRect(b.centerX() - 0.9f * u, b.top + 1 * u, b.centerX() + 0.9f * u, b.top + 2.8f * u, fill);
                 c.drawRect(b.centerX() - 0.9f * u, b.top + 4.5f * u, b.centerX() + 0.9f * u, b.bottom - 1 * u, fill);
+                break;
+            case VIEW: {
+                // four corners of a frame opening wide
+                float k = 3.6f * u, w = 1.5f * u;
+                c.drawRect(b.left, b.top, b.left + k, b.top + w, fill);
+                c.drawRect(b.left, b.top, b.left + w, b.top + k, fill);
+                c.drawRect(b.right - k, b.top, b.right, b.top + w, fill);
+                c.drawRect(b.right - w, b.top, b.right, b.top + k, fill);
+                c.drawRect(b.left, b.bottom - w, b.left + k, b.bottom, fill);
+                c.drawRect(b.left, b.bottom - k, b.left + w, b.bottom, fill);
+                c.drawRect(b.right - k, b.bottom - w, b.right, b.bottom, fill);
+                c.drawRect(b.right - w, b.bottom - k, b.right, b.bottom, fill);
+                break;
+            }
+            case ARRANGE:
+                // boards in a row, one lifted out of its place
+                c.drawRoundRect(b.left, b.top + 6 * u, b.left + 5 * u, b.bottom, rr, rr, fill);
+                c.drawRoundRect(b.right - 5 * u, b.top + 1 * u, b.right, b.top + 7 * u, rr, rr, fill);
+                c.drawRoundRect(b.right - 5 * u, b.top + 7.5f * u, b.right, b.bottom, rr, rr, stroke);
                 break;
             case RENAME:
                 c.drawRect(b.left, b.centerY() - 0.8f * u, b.right - 4 * u, b.centerY() + 0.8f * u, fill);

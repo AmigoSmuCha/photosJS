@@ -690,7 +690,7 @@ public class ViewerView extends View {
 
     private void tap(float x, float y) {
         if (closing) return;
-        float barH = 46 * dp * Math.min(1.25f, textScale);
+        float barH = 46 * dp * L.barScale(textScale);
         if (chrome > 0.5f && y < barH && noteShowing() && noteUndo != null) {
             Runnable u = noteUndo;
             clearNote();
@@ -855,7 +855,7 @@ public class ViewerView extends View {
         Media.Item it = current();
         if (it == null) return;
         int a = Math.round(255 * chrome);
-        float h = 46 * dp * Math.min(1.25f, textScale);
+        float h = 46 * dp * L.barScale(textScale);
         float base = h / 2f + text.getTextSize() * 0.36f;
         // top: when, and where in the feed
         fill.setColor(t.bg);

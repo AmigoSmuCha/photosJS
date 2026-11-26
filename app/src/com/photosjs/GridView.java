@@ -126,6 +126,11 @@ public class GridView extends View {
     private float fromRadius;
     private long morphStart = -1, morphMs = MORPH_MS;
     private boolean fadeAll;
+    // resizing in the ripple style (settings › resize motion): the photos move in
+    // a wave that starts under the fingers, each dimming as the wave passes it
+    private static final long RIPPLE_MS = 780;
+    private boolean rippleStyle = true, rippling;
+    private float rippleX, rippleY, rippleMax = 1f;
 
     // arriving thumbnails settle in
     private final Set<Long> waited = new HashSet<>();
@@ -525,7 +530,12 @@ public class GridView extends View {
         invalidate();
     }
 
+    void setRipple(boolean on) {
+        rippleStyle = on;
+    }
+
     private void startMorph(HashMap<Long, RectF> old, boolean fade, float oldRadius) {
+        rippling = false;
         morphMs = Motion.ms(MORPH_MS);
         if (morphMs <= 0) {
             morphStart = -1;
@@ -802,9 +812,30 @@ public class GridView extends View {
             morphStart = -1;
             from = new HashMap<>();
             fadeAll = false;
+            rippling = false;
             return 1f;
         }
         return u;
+    }
+
+    /**
+     * How far along one photo is: the same as everything for a glide; in a
+     * ripple, photos further from the fingers start later (the wave takes 40%
+     * of the time to cross the screen), each moving for the other 60%.
+     */
+    private float entryU(int e, float u) {
+        if (!rippling || u >= 1f || eItem[e] < 0) return u;
+        RectF f = from.get(items.get(eItem[e]).key());
+        float cx, cy;
+        if (f != null) {
+            cx = f.centerX();
+            cy = f.centerY();
+        } else {
+            cx = ex[e] + ew[e] / 2f;
+            cy = ey[e] + eh[e] / 2f - scrollY;
+        }
+        float d = Math.min(1f, (float) Math.hypot(cx - rippleX, cy - rippleY) / rippleMax);
+        return clamp((u - 0.4f * d) / 0.6f, 0f, 1f);
     }
 
     private boolean screenRect(int e, float u, RectF out) {
@@ -833,7 +864,7 @@ public class GridView extends View {
             for (int e = gFirst[g]; e <= gLast[g]; e++) {
                 if (eItem[e] < 0 || ey[e] + eh[e] < top || ey[e] > bottom) continue;
                 RectF r = new RectF();
-                screenRect(e, u, r);
+                screenRect(e, entryU(e, u), r);
                 applyLive(r);
                 m.put(items.get(eItem[e]).key(), r);
             }
@@ -878,6 +909,16 @@ public class GridView extends View {
         }
         scrollY = clamp(scrollY, 0, maxScroll());
         startMorph(old, false, oldRadius);
+        if (rippleStyle && morphStart >= 0) {
+            rippling = true;
+            morphMs = Motion.ms(RIPPLE_MS);
+            rippleX = focusX;
+            rippleY = focusY;
+            rippleMax = (float) Math.hypot(getWidth(), getHeight()) * 0.5f;
+            for (RectF r : old.values()) {
+                rippleMax = Math.max(rippleMax, (float) Math.hypot(r.centerX() - focusX, r.centerY() - focusY));
+            }
+        }
         cum = 1f;
         live = 1f;
         performHapticFeedback(HapticFeedbackConstants.CLOCK_TICK);
@@ -938,10 +979,18 @@ public class GridView extends View {
                     continue;
                 }
                 Media.Item it = items.get(eItem[e]);
-                boolean moving = screenRect(e, u, tmp);
+                float ue = entryU(e, u);
+                boolean moving = screenRect(e, ue, tmp);
                 if (tmp.bottom < 0 || tmp.top > H) continue;
                 float alpha = 1f;
-                if (u < 1f && !moving && (fadeAll || !from.isEmpty())) alpha = Motion.fade(u);
+                if (u < 1f && !moving && (fadeAll || !from.isEmpty())) alpha = Motion.fade(ue);
+                if (rippling && ue > 0f && ue < 1f) {
+                    // the wave passing: the photo's light dips and it draws in a little
+                    float br = (float) Math.sin(Math.PI * ue);
+                    alpha *= 1f - 0.5f * br;
+                    float k = 0.07f * br;
+                    tmp.inset(tmp.width() * k / 2f, tmp.height() * k / 2f);
+                }
                 drawItem(c, it, tmp, alpha, placeholder, now, rad);
                 if (alpha < 1f) again = true;
             }

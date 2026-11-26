@@ -224,7 +224,7 @@ public class EditorView extends View {
     }
 
     private float barH() {
-        return Math.round(46 * dp * Math.min(1.25f, textScale));
+        return Math.round(46 * dp * L.barScale(textScale));
     }
 
     private float sliderH() {

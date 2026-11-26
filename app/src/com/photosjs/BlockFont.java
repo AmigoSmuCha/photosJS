@@ -183,8 +183,13 @@ final class BlockFont {
     }
 
     /** The block size that makes this face sit with text of the given size. */
+    /**
+     * The block size that makes this face sit with text of the given size. Not
+     * rounded: every text size is a real size. Drawing puts each block edge on
+     * a whole pixel, so blocks stay sharp (a few are a pixel wider than others).
+     */
     static float block(float textSize) {
-        return Math.max(1f, Math.round(textSize / 6.2f));
+        return Math.max(1f, textSize / 6.2f);
     }
 
     static float width(String s, float block) {
@@ -208,10 +213,10 @@ final class BlockFont {
             String[] g = glyph(s.charAt(i), thin);
             for (int row = 0; row < g.length; row++) {
                 String line = g[row];
+                float t = Math.round(top + row * block), b = Math.round(top + (row + 1) * block);
                 for (int col = 0; col < line.length(); col++) {
                     if (line.charAt(col) != '#') continue;
-                    float l = cx + col * block, t = top + row * block;
-                    c.drawRect(l, t, l + block, t + block, p);
+                    c.drawRect(Math.round(cx + col * block), t, Math.round(cx + (col + 1) * block), b, p);
                 }
             }
             cx += (g[0].length() + 1) * block;

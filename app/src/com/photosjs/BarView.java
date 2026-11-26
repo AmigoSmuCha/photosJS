@@ -57,6 +57,7 @@ public class BarView extends View {
     private boolean selecting;
     private int count;
     private String[] actions = {};
+    private String label;            // instead of the count (arranging albums)
     private final RectF[] actionRects = new RectF[8];
     private final RectF doneRect = new RectF();
 
@@ -84,7 +85,7 @@ public class BarView extends View {
     void setLook(boolean rounded, int heading, float textScale) {
         this.rounded = rounded;
         this.heading = heading;
-        scale = Math.min(1.25f, textScale);
+        scale = textScale;
         text.setTextSize(10.5f * dp * scale);
         invalidate();
     }
@@ -128,8 +129,15 @@ public class BarView extends View {
         invalidate();
     }
 
+    /** Arranging albums: the same bar as selecting, with "arrange albums" and "done". */
+    void setArranging(boolean on) {
+        label = on ? "arrange albums" : null;
+        setSelecting(on, 1, null);
+    }
+
     void setSelecting(boolean on, int count, String[] actions) {
         selecting = on;
+        if (!on) label = null;
         this.count = count;
         this.actions = actions == null ? new String[0] : actions;
         invalidate();
@@ -202,7 +210,7 @@ public class BarView extends View {
         float h = getHeight();
         float base = h / 2f + text.getTextSize() * 0.36f;
         // the count, in the lamp colour, in the heading face
-        String n = String.valueOf(count);
+        String n = label != null ? label : String.valueOf(count);
         Heading.style(head, getContext(), heading, 10.5f * dp * scale);
         head.setColor(t.accent);
         float x = 14 * dp;
