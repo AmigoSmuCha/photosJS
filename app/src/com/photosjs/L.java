@@ -39,6 +39,9 @@ final class L {
     }
 
     static final float[] TEXT = {0.9f, 1f, 1.15f, 1.3f, 1.5f};
+    // Alagard reads small at the same size: its steps start where the others' large is
+    // (the user, 2026-11-26: the two smallest out, two bigger in)
+    static final float[] TEXT_ALAGARD = {1.15f, 1.3f, 1.5f, 1.75f, 2f};
     static final String[] TEXT_NAMES = {"small", "medium", "large", "larger", "largest"};
 
     static int textIndex(Context c) {
@@ -50,8 +53,9 @@ final class L {
         return 0.6f + 0.4f * textScale;
     }
 
+    /** every size in the app follows this: words, rows, bars */
     static float textScale(Context c) {
-        return TEXT[textIndex(c)];
+        return (heading(c) == Heading.ALAGARD ? TEXT_ALAGARD : TEXT)[textIndex(c)];
     }
 
     /** Pinterest look by default: rounded cards with air between them. */

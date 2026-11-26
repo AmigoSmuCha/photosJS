@@ -2167,7 +2167,7 @@ public class MainActivity extends Activity implements GridView.Listener, FolderV
                 switchTheme(Theme.index(t.key) + d);
             }
         });
-        r.add(new Row("text size", "every word in the app") {
+        r.add(new Row("text size", "every word in the app; alagard has its own, larger steps") {
             @Override
             public String value() {
                 return L.TEXT_NAMES[L.textIndex(MainActivity.this)];
@@ -2189,7 +2189,8 @@ public class MainActivity extends Activity implements GridView.Listener, FolderV
             public void step(int d) {
                 L.putInt(MainActivity.this, "heading", L.heading(MainActivity.this));
                 cycle("heading", 0, Heading.NAMES.length, d);
-                applyLook(false);
+                // alagard has its own, larger text sizes: the bars change height too
+                applyLook(true);
             }
         });
         r.add(new Row("animations", "full springs, calm fades, or none") {
