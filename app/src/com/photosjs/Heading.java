@@ -36,6 +36,8 @@ final class Heading {
     private static Typeface alagard;
     private static Context app;
     private static int face = PLAIN;
+    // Alagard's letters are drawn this much larger than the size asked (rows stay)
+    private static float alagardBoost = 1f;
     // a copy of the caller's paint in the face (drawing happens on the main thread only)
     private static final TextPaint scratch = new TextPaint();
 
@@ -56,6 +58,7 @@ final class Heading {
     static void setFace(Context c, int f) {
         app = c.getApplicationContext();
         face = Math.max(0, Math.min(NAMES.length - 1, f));
+        alagardBoost = L.alagardBoost(c);
     }
 
     static int face() {
@@ -105,7 +108,7 @@ final class Heading {
     }
 
     static float alagardSize(float plainSize) {
-        return Math.max(10f, Math.round(plainSize));
+        return Math.max(10f, Math.round(plainSize * alagardBoost));
     }
 
     static float width(String s, int style, Paint p) {

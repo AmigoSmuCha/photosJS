@@ -82,7 +82,12 @@ public class MainActivity extends Activity implements GridView.Listener, FolderV
     private final Map<Long, Media.Item> byKey = new HashMap<>();
     private Set<Long> hiddenKeys = new HashSet<>();
     private List<Store.Album> albums = new ArrayList<>();
-    private boolean loadedOnce, asked, hasAlbums, hiddenOpen, arranging;
+    private boolean loadedOnce, asked, hasAlbums, hiddenOpen;
+    // arranging by hand: the boards (albums or folders) or the feed being arranged
+    private FolderView arrangingBoards;
+    private GridView arrangingFeed;
+    // every view's order by hand: view ("all", "f:<bucket>", "a:<album>", "folders") -> key -> place
+    private Map<String, Map<Long, Integer>> orders = new HashMap<>();
     private int tab = TAB_PHOTOS;
     private Media.Folder openFolder, openAlbum;
     private int photoCount, folderCount, folderItemCount, albumItemCount;
@@ -141,6 +146,7 @@ public class MainActivity extends Activity implements GridView.Listener, FolderV
         folderView = new FolderView(this);
         folderView.setThumbs(thumbs);
         folderView.setListener(this);
+        folderView.setHoldable(true);
         folderView.setColumns(L.getInt(this, "fcols", 2));
         boards.addView(folderView, new FrameLayout.LayoutParams(-1, -1));
         folderGrid = grid();
@@ -273,12 +279,81 @@ public class MainActivity extends Activity implements GridView.Listener, FolderV
         }
     }
 
-    /** The whole app cross-fades at once, not colour by colour. */
+    private android.animation.ValueAnimator textGrow;
+
+    /**
+     * A new text size grows (or shrinks) into place: the settings, the reading
+     * line and the bar follow it frame by frame; the feeds and boards take it
+     * at the end, once.
+     */
+    private void animateTextSize(final float from, final float to) {
+        if (textGrow != null) textGrow.cancel();
+        long d = Motion.ms(320);
+        if (d <= 0 || from == to) {
+            applyLook(true);
+            return;
+        }
+        Heading.setFace(this, L.heading(this));
+        final boolean rounded = L.rounded(this);
+        final int heading = L.heading(this);
+        textGrow = android.animation.ValueAnimator.ofFloat(0f, 1f);
+        textGrow.setDuration(d);
+        textGrow.setInterpolator(new DecelerateInterpolator());
+        textGrow.addUpdateListener(new android.animation.ValueAnimator.AnimatorUpdateListener() {
+            @Override
+            public void onAnimationUpdate(android.animation.ValueAnimator a) {
+                float s = from + (to - from) * (Float) a.getAnimatedValue();
+                settings.setLook(heading, s);
+                top.setTextScale(s);
+                bar.setLook(rounded, heading, s);
+                LinearLayout.LayoutParams tl = (LinearLayout.LayoutParams) top.getLayoutParams();
+                tl.height = Math.round(27 * dp * s);
+                LinearLayout.LayoutParams bl = (LinearLayout.LayoutParams) bar.getLayoutParams();
+                bl.height = Math.round(46 * dp * L.barScale(s));
+                top.requestLayout();
+                bar.requestLayout();
+            }
+        });
+        textGrow.addListener(new android.animation.AnimatorListenerAdapter() {
+            private boolean cancelled;
+
+            @Override
+            public void onAnimationCancel(android.animation.Animator a) {
+                cancelled = true;
+            }
+
+            @Override
+            public void onAnimationEnd(android.animation.Animator a) {
+                if (!cancelled) applyLook(true);
+            }
+        });
+        textGrow.start();
+    }
+
+    // the theme being switched to: t changes only once the old look is captured
+    private Theme themeTarget;
+    private boolean themeSnapPending;
+    private android.animation.ValueAnimator barFade;
+
+    /** the theme the settings show: where a switch is going, else the current one */
+    private Theme shownTheme() {
+        return themeTarget != null ? themeTarget : t;
+    }
+
+    /**
+     * The whole app cross-fades at once, not colour by colour: a snapshot of the
+     * old look lies over the new one and fades away, and the system bars fade
+     * along. Steps taken while a snapshot is on its way only move the target,
+     * so quick taps never stack up or end on a theme other than the one named.
+     */
     private void switchTheme(int index) {
         final Theme next = Theme.ALL[(index + Theme.ALL.length) % Theme.ALL.length];
+        themeTarget = next;
         L.putString(this, "theme", next.key);
+        if (themeSnapPending) return;
         if (root.getWidth() == 0 || Motion.level() == Motion.OFF) {
-            t = next;
+            t = themeTarget;
+            themeTarget = null;
             applyTheme();
             return;
         }
@@ -286,30 +361,59 @@ public class MainActivity extends Activity implements GridView.Listener, FolderV
         try {
             snap = Bitmap.createBitmap(root.getWidth(), root.getHeight(), Bitmap.Config.ARGB_8888);
         } catch (Throwable e) {
-            t = next;
+            t = themeTarget;
+            themeTarget = null;
             applyTheme();
             return;
         }
         int[] loc = new int[2];
         root.getLocationInWindow(loc);
         Rect area = new Rect(loc[0], loc[1], loc[0] + root.getWidth(), loc[1] + root.getHeight());
+        themeSnapPending = true;
         PixelCopy.request(getWindow(), area, snap, new PixelCopy.OnPixelCopyFinishedListener() {
             @Override
             public void onPixelCopyFinished(int result) {
-                t = next;
+                themeSnapPending = false;
+                final int oldBar = t.bg, oldNav = t.plate;
+                t = themeTarget != null ? themeTarget : t;
+                themeTarget = null;
                 applyTheme();
-                if (result != PixelCopy.SUCCESS) return;
+                if (result != PixelCopy.SUCCESS) {
+                    snap.recycle();
+                    return;
+                }
+                long d = Motion.ms(450);
                 final ImageView over = new ImageView(MainActivity.this);
+                over.setScaleType(ImageView.ScaleType.FIT_XY);
                 over.setImageBitmap(snap);
                 root.addView(over, new FrameLayout.LayoutParams(-1, -1));
-                over.animate().alpha(0f).setDuration(Motion.ms(450))
+                over.animate().alpha(0f).setDuration(d)
                         .setInterpolator(new DecelerateInterpolator())
                         .withEndAction(new Runnable() {
                             @Override
                             public void run() {
                                 root.removeView(over);
+                                snap.recycle();
                             }
                         });
+                // the status and navigation bars fade with it instead of jumping
+                if (barFade != null) barFade.cancel();
+                final int newBar = t.bg, newNav = t.plate;
+                final Window w = getWindow();
+                w.setStatusBarColor(oldBar);
+                w.setNavigationBarColor(oldNav);
+                barFade = android.animation.ValueAnimator.ofFloat(0f, 1f);
+                barFade.setDuration(d);
+                barFade.setInterpolator(new DecelerateInterpolator());
+                barFade.addUpdateListener(new android.animation.ValueAnimator.AnimatorUpdateListener() {
+                    @Override
+                    public void onAnimationUpdate(android.animation.ValueAnimator a) {
+                        float f = (Float) a.getAnimatedValue();
+                        w.setStatusBarColor(Theme.mix(oldBar, newBar, f));
+                        w.setNavigationBarColor(Theme.mix(oldNav, newNav, f));
+                    }
+                });
+                barFade.start();
             }
         }, main);
     }
@@ -380,6 +484,7 @@ public class MainActivity extends Activity implements GridView.Listener, FolderV
                 final List<Media.Item> list = Media.load(getContentResolver());
                 final Set<Long> hid = store.hidden();
                 final List<Store.Album> al = store.albums();
+                final Map<String, Map<Long, Integer>> ord = store.orders();
                 main.post(new Runnable() {
                     @Override
                     public void run() {
@@ -398,6 +503,7 @@ public class MainActivity extends Activity implements GridView.Listener, FolderV
                         }
                         hiddenKeys = hid;
                         albums = al;
+                        orders = ord;
                         thumbs.clearFailures();
                         if (first) top.clearMessage();
                         refreshAll(first ? GridView.TOP : GridView.KEEP);
@@ -445,9 +551,7 @@ public class MainActivity extends Activity implements GridView.Listener, FolderV
 
     private int sortOf(String view) {
         int by = L.getInt(this, "sort:" + sortKey(view), L.getInt(this, "sort:all", Media.BY_TAKEN));
-        // by hand is for albums only
-        if (by == Media.BY_HAND && !"albums".equals(view)) by = Media.BY_TAKEN;
-        return by;
+        return Math.max(0, Math.min(Media.BY_HAND, by));
     }
 
     private boolean descOf(String view) {
@@ -507,7 +611,7 @@ public class MainActivity extends Activity implements GridView.Listener, FolderV
     private void refreshPhotos(int how) {
         List<Media.Item> list = Media.filter(all, videos(), 0, hiddenKeys);
         int by = sortOf("all");
-        Media.sort(list, by, descOf("all"));
+        sortFeed(list, "all");
         photos.setItems(list, dated(by), by == Media.BY_MODIFIED, how);
         photoCount = list.size();
     }
@@ -516,6 +620,14 @@ public class MainActivity extends Activity implements GridView.Listener, FolderV
         List<Media.Item> list = Media.filter(all, videos(), 0, hiddenKeys);
         Media.sort(list, Media.BY_TAKEN, true);   // collages: each folder's newest photos
         List<Media.Folder> fs = Media.folders(list);
+        if (sortOf("folders") == Media.BY_HAND) {
+            // folders never arranged (new ones) first
+            Map<Long, Integer> pos = orderOf("folders");
+            for (Media.Folder f : fs) {
+                Integer p = pos.get(f.bucket);
+                f.order = p != null ? p : -1;
+            }
+        }
         Media.sortFolders(fs, sortOf("folders"), descOf("folders"));
         folderView.setFolders(fs, sizes(), toTop);
         folderCount = fs.size();
@@ -529,7 +641,7 @@ public class MainActivity extends Activity implements GridView.Listener, FolderV
         String key = "f:" + openFolder.bucket;
         List<Media.Item> list = Media.filter(all, videos(), openFolder.bucket, hiddenKeys);
         int by = sortOf(key);
-        Media.sort(list, by, descOf(key));
+        sortFeed(list, key);
         folderGrid.setItems(list, dated(by), by == Media.BY_MODIFIED, how);
         folderItemCount = list.size();
     }
@@ -590,7 +702,7 @@ public class MainActivity extends Activity implements GridView.Listener, FolderV
         String key = "a:" + a.id;
         List<Media.Item> list = albumItems(a);
         int by = sortOf(key);
-        Media.sort(list, by, descOf(key));
+        sortFeed(list, key);
         albumGrid.setItems(list, dated(by), by == Media.BY_MODIFIED, how);
         albumItemCount = list.size();
     }
@@ -743,51 +855,135 @@ public class MainActivity extends Activity implements GridView.Listener, FolderV
 
     @Override
     public void onTwoFingerTap(GridView from, Media.Item it) {
-        if (from == hiddenGrid || picking) return;
+        if (from == hiddenGrid || picking || arranging()) return;
         if (from.selecting()) exitSelect();
         else startSelect(from, it);
     }
 
-    // ---- arranging albums by hand ----
+    // ---- arranging by hand: albums, folder boards, photos ----
 
-    private void startArrange() {
-        if (tab != TAB_ALBUMS || openAlbum != null || albums.size() < 2) {
-            if (albums.size() < 2) say("one album has nothing to be arranged with");
+    private boolean arranging() {
+        return arrangingBoards != null || arrangingFeed != null;
+    }
+
+    /** albums or folder boards: hold one and move it */
+    private void startArrangeBoards(FolderView fv) {
+        boolean albumsToo = fv == albumBoards;
+        int n = albumsToo ? albums.size() : folderCount;
+        if (n < 2) {
+            say(albumsToo ? "one album has nothing to be arranged with" : "one board has nothing to be arranged with");
             return;
         }
-        arranging = true;
-        albumBoards.setArranging(true);
+        endArrange();
+        arrangingBoards = fv;
+        fv.setArranging(true);
         pager.setLocked(true);
-        bar.setArranging(true);
-        say("hold an album and move it · done when they're in place", 7000, 0);
+        bar.setArranging(albumsToo ? "arrange albums" : "arrange boards");
+        say("hold " + (albumsToo ? "an album" : "a board") + " and move it · done when they're in place", 7000, 0);
+    }
+
+    /**
+     * Photos by hand in this feed (all photos, a folder or an album). The order
+     * on screen becomes the order by hand first, so nothing jumps; then hold a
+     * photo and move it.
+     */
+    private void startArrangeFeed(GridView g) {
+        String key = feedKey(g);
+        if (key == null || picking) return;
+        exitSelect();
+        endArrange();
+        if (sortOf(key) != Media.BY_HAND) {
+            List<Long> keys = new ArrayList<>();
+            for (Media.Item it : g.items()) keys.add(it.key());
+            saveOrder(key, keys);
+            L.putInt(this, "sort:" + sortKey(key), Media.BY_HAND);
+            if (g == photos) refreshPhotos(GridView.KEEP);
+            else if (g == folderGrid) refreshFolderGrid(GridView.KEEP);
+            else refreshAlbumGrid(GridView.KEEP);
+        }
+        arrangingFeed = g;
+        g.setArranging(true);
+        pager.setLocked(true);
+        bar.setArranging("arrange photos");
+        say("hold a photo and move it · done when they're in place", 7000, 0);
     }
 
     private void endArrange() {
-        if (!arranging) return;
-        arranging = false;
-        albumBoards.setArranging(false);
-        pager.setLocked(false);
-        bar.setArranging(false);
+        if (arrangingBoards != null) arrangingBoards.setArranging(false);
+        if (arrangingFeed != null) arrangingFeed.setArranging(false);
+        if (!arranging()) return;
+        arrangingBoards = null;
+        arrangingFeed = null;
+        if (!hiddenOpen) pager.setLocked(false);
+        bar.setArranging(null);
         unsay();
     }
 
+    /** the view a feed shows, for orders by hand */
+    private String feedKey(GridView g) {
+        if (g == photos) return "all";
+        if (g == folderGrid && openFolder != null) return "f:" + openFolder.bucket;
+        if (g == albumGrid && openAlbum != null) return "a:" + openAlbum.bucket;
+        return null;
+    }
+
+    private Map<Long, Integer> orderOf(String view) {
+        Map<Long, Integer> m = orders.get(view);
+        return m != null ? m : new HashMap<Long, Integer>();
+    }
+
+    /** remembered now (in memory) and written in the background */
+    private void saveOrder(final String view, final List<Long> keys) {
+        Map<Long, Integer> m = new HashMap<>();
+        for (int i = 0; i < keys.size(); i++) m.put(keys.get(i), i);
+        orders.put(view, m);
+        io.execute(new Runnable() {
+            @Override
+            public void run() {
+                store.setOrder(view, keys);
+            }
+        });
+    }
+
+    /** a feed in its order: by hand from the stored places, else by the sort setting */
+    private void sortFeed(List<Media.Item> list, String view) {
+        int by = sortOf(view);
+        if (by == Media.BY_HAND) Media.sortByHand(list, orderOf(view));
+        else Media.sort(list, by, descOf(view));
+    }
+
     @Override
-    public void onArranged(List<Media.Folder> order) {
+    public void onFeedArranged(GridView from, List<Media.Item> order) {
+        String key = feedKey(from);
+        if (key == null) return;
+        List<Long> keys = new ArrayList<>();
+        for (Media.Item it : order) keys.add(it.key());
+        saveOrder(key, keys);
+    }
+
+    @Override
+    public void onArranged(FolderView from, List<Media.Folder> order) {
         List<Long> ids = new ArrayList<>();
         for (Media.Folder f : order) ids.add(f.bucket);
-        store.setOrder(ids);
-        // arranging means the albums are now sorted by hand
-        L.putInt(this, "sort:albums", Media.BY_HAND);
-        albums = store.albums();
-        for (Media.Folder f : order) {
-            Store.Album a = album(f.bucket);
-            if (a != null) f.order = a.pos;
+        if (from == albumBoards) {
+            store.setOrder(ids);
+            // arranging means the albums are now sorted by hand
+            L.putInt(this, "sort:albums", Media.BY_HAND);
+            albums = store.albums();
+            for (Media.Folder f : order) {
+                Store.Album a = album(f.bucket);
+                if (a != null) f.order = a.pos;
+            }
+        } else {
+            saveOrder("folders", ids);
+            L.putInt(this, "sort:folders", Media.BY_HAND);
+            for (int i = 0; i < order.size(); i++) order.get(i).order = i;
         }
     }
 
     @Override
     public void onSelectDone() {
-        if (arranging) {
+        if (arranging()) {
             endArrange();
             return;
         }
@@ -839,10 +1035,14 @@ public class MainActivity extends Activity implements GridView.Listener, FolderV
 
     // ---- the long-press fan ----
 
+    /** what blooms around the thumb, unless settings › long press says otherwise */
+    private static final int[] FAN_DEFAULT = {FanView.ALBUM, FanView.SELECT, FanView.WALLPAPER, FanView.EDIT,
+            FanView.ORDER};
+
     private int[] fanActions() {
-        int[] def = {FanView.ALBUM, FanView.SELECT, FanView.WALLPAPER, FanView.EDIT};
-        int[] out = new int[4];
-        for (int i = 0; i < 4; i++) out[i] = L.getInt(this, "fan" + i, def[i]);
+        int[] def = FAN_DEFAULT;
+        int[] out = new int[def.length];
+        for (int i = 0; i < def.length; i++) out[i] = L.getInt(this, "fan" + i, def[i]);
         return out;
     }
 
@@ -879,7 +1079,10 @@ public class MainActivity extends Activity implements GridView.Listener, FolderV
         holdOnSelection = false;
         pending = new ArrayList<>();
         Bitmap bm = f.cover != null ? thumbs.best(f.cover, 1) : null;
-        fan.open(screen, bm, radius, x, y, new int[] {FanView.RENAME, FanView.ARRANGE, FanView.DROP_ALBUM}, false);
+        // a device folder can only be arranged here: no renaming, no deleting
+        int[] acts = from == folderView ? new int[] {FanView.ARRANGE_BOARDS}
+                : new int[] {FanView.RENAME, FanView.ARRANGE, FanView.DROP_ALBUM};
+        fan.open(screen, bm, radius, x, y, acts, false);
     }
 
     @Override
@@ -941,7 +1144,9 @@ public class MainActivity extends Activity implements GridView.Listener, FolderV
                 }
                 break;
             case FanView.DROP_ALBUM: if (holdBoard != null) dropAlbum(holdBoard.bucket); break;
-            case FanView.ARRANGE: startArrange(); break;
+            case FanView.ARRANGE: startArrangeBoards(albumBoards); break;
+            case FanView.ARRANGE_BOARDS: startArrangeBoards(folderView); break;
+            case FanView.ORDER: if (holdGrid != null) startArrangeFeed(holdGrid); break;
         }
         // done with the selection, as the same action in the bar would be
         if (holdOnSelection && holdGrid != null && holdGrid.selecting()
@@ -1319,6 +1524,7 @@ public class MainActivity extends Activity implements GridView.Listener, FolderV
             }
         }
         albumBoards.setHoldable(false);
+        folderView.setHoldable(false);
         viewer.setActions(pickMany ? new String[] {"edit", "choose", "use"} : new String[] {"edit", "use"});
         // picking several, a sideways drag chooses; the bar moves between pages
         if (pickMany) pager.setLocked(true);
@@ -1917,7 +2123,7 @@ public class MainActivity extends Activity implements GridView.Listener, FolderV
         pending = one(it);
         int[] acts = fanActions();
         for (int i = 0; i < acts.length; i++) {
-            if (acts[i] == FanView.SELECT || acts[i] == FanView.VIEW) acts[i] = FanView.NONE;
+            if (acts[i] == FanView.SELECT || acts[i] == FanView.VIEW || acts[i] == FanView.ORDER) acts[i] = FanView.NONE;
         }
         fan.open(screen, bm, 0, x, y, acts, false);
     }
@@ -2037,7 +2243,7 @@ public class MainActivity extends Activity implements GridView.Listener, FolderV
             unsay();
         } else if (sheet.isOpen()) {
             sheet.close();
-        } else if (arranging) {
+        } else if (arranging()) {
             endArrange();
         } else if (editor.isOpen()) {
             editor.back();
@@ -2118,8 +2324,8 @@ public class MainActivity extends Activity implements GridView.Listener, FolderV
 
             @Override
             public void step(int d) {
-                // albums can also be sorted by hand (hold an album › arrange albums)
-                int n = "albums".equals(view) ? 5 : 4;
+                // by hand: the order things were arranged in (hold one › arrange)
+                int n = 5;
                 L.putInt(MainActivity.this, "sort:" + view, (sortOf(view) + d + n) % n);
                 resort(view);
             }
@@ -2133,7 +2339,7 @@ public class MainActivity extends Activity implements GridView.Listener, FolderV
             @Override
             public void step(int d) {
                 if (sortOf(view) == Media.BY_HAND) {
-                    say("hold an album and choose arrange albums");
+                    say("arranged by hand: hold one and choose arrange");
                     return;
                 }
                 L.putInt(MainActivity.this, "desc:" + view, descOf(view) ? 0 : 1);
@@ -2159,15 +2365,15 @@ public class MainActivity extends Activity implements GridView.Listener, FolderV
         r.add(new Row("theme", "the colours of the room") {
             @Override
             public String value() {
-                return t.name;
+                return shownTheme().name;
             }
 
             @Override
             public void step(int d) {
-                switchTheme(Theme.index(t.key) + d);
+                switchTheme(Theme.index(shownTheme().key) + d);
             }
         });
-        r.add(new Row("text size", "every word in the app; alagard has its own, larger steps") {
+        r.add(new Row("text size", "every word in the app; alagard's letters run a size larger") {
             @Override
             public String value() {
                 return L.TEXT_NAMES[L.textIndex(MainActivity.this)];
@@ -2175,8 +2381,9 @@ public class MainActivity extends Activity implements GridView.Listener, FolderV
 
             @Override
             public void step(int d) {
+                float from = L.textScale(MainActivity.this);
                 cycle("text", 1, L.TEXT.length, d);
-                applyLook(true);
+                animateTextSize(from, L.textScale(MainActivity.this));
             }
         });
         r.add(new Row("font", "every word in the app: plain, blocks, alagard, spaced caps or thin blocks") {
@@ -2189,7 +2396,6 @@ public class MainActivity extends Activity implements GridView.Listener, FolderV
             public void step(int d) {
                 L.putInt(MainActivity.this, "heading", L.heading(MainActivity.this));
                 cycle("heading", 0, Heading.NAMES.length, d);
-                // alagard has its own, larger text sizes: the bars change height too
                 applyLook(true);
             }
         });
@@ -2244,7 +2450,7 @@ public class MainActivity extends Activity implements GridView.Listener, FolderV
         });
 
         r.add(new Head("feed"));
-        r.add(new Row("pinterest view", "whole photos in their own shape: always, never (squares), or up to a number of columns") {
+        r.add(new Row("whole photos", "photos uncropped, in their own shape: always, never (squares), or up to a number of columns") {
             @Override
             public String value() {
                 return PINTEREST_NAMES[pinterestMode()];
@@ -2263,7 +2469,7 @@ public class MainActivity extends Activity implements GridView.Listener, FolderV
             }
         });
         if (pinterestMode() == 2) {
-            r.add(new Row("threshold", "whole photos at this many columns or fewer, squares beyond") {
+            r.add(new Row("whole up to", "whole photos at this many columns or fewer, squares beyond") {
                 @Override
                 public String value() {
                     int p = pinterestThreshold();
@@ -2348,11 +2554,11 @@ public class MainActivity extends Activity implements GridView.Listener, FolderV
         });
 
         r.add(new Head("long press"));
-        final int[] fanDef = {FanView.ALBUM, FanView.SELECT, FanView.WALLPAPER, FanView.EDIT};
+        final int[] fanDef = FAN_DEFAULT;
         final int[] choices = new int[FanView.PHOTO_ACTIONS.length + 1];
         choices[0] = FanView.NONE;
         System.arraycopy(FanView.PHOTO_ACTIONS, 0, choices, 1, FanView.PHOTO_ACTIONS.length);
-        for (int i = 0; i < 4; i++) {
+        for (int i = 0; i < fanDef.length; i++) {
             final int slot = i;
             r.add(new Row("fan " + (i + 1), i == 0 ? "what blooms around your thumb" : "") {
                 @Override

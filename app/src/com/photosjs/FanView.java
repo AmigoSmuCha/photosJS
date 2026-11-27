@@ -39,12 +39,12 @@ public class FanView extends View {
 
     // actions
     static final int ALBUM = 0, WALLPAPER = 1, EDIT = 2, SHARE = 3, HIDE = 4, DELETE = 5, INFO = 6, SELECT = 7,
-            VIEW = 8;
-    static final int RENAME = 20, DROP_ALBUM = 21, ARRANGE = 22;
+            VIEW = 8, ORDER = 9;
+    static final int RENAME = 20, DROP_ALBUM = 21, ARRANGE = 22, ARRANGE_BOARDS = 23;
     static final int W_HOME = 30, W_LOCKJS = 31;
     static final int NONE = -1;
 
-    static final int[] PHOTO_ACTIONS = {ALBUM, SELECT, WALLPAPER, EDIT, SHARE, HIDE, DELETE, INFO, VIEW};
+    static final int[] PHOTO_ACTIONS = {ALBUM, SELECT, WALLPAPER, EDIT, SHARE, HIDE, DELETE, INFO, VIEW, ORDER};
 
     static String name(int a) {
         switch (a) {
@@ -60,6 +60,8 @@ public class FanView extends View {
             case RENAME: return "rename album";
             case DROP_ALBUM: return "delete album (photos stay)";
             case ARRANGE: return "arrange albums";
+            case ARRANGE_BOARDS: return "arrange boards";
+            case ORDER: return "arrange photos";
             case W_HOME: return "home screen";
             case W_LOCKJS: return "lockJS";
             default: return "none";
@@ -71,6 +73,7 @@ public class FanView extends View {
         switch (a) {
             case ALBUM: return "album";
             case WALLPAPER: return "wallpaper";
+            case ORDER: return "arrange";
             case DELETE: return "trash";
             default: return a == NONE ? "none" : name(a);
         }
@@ -410,7 +413,9 @@ public class FanView extends View {
                 break;
             }
             case ARRANGE:
-                // boards in a row, one lifted out of its place
+            case ARRANGE_BOARDS:
+            case ORDER:
+                // things in a row, one lifted out of its place
                 c.drawRoundRect(b.left, b.top + 6 * u, b.left + 5 * u, b.bottom, rr, rr, fill);
                 c.drawRoundRect(b.right - 5 * u, b.top + 1 * u, b.right, b.top + 7 * u, rr, rr, fill);
                 c.drawRoundRect(b.right - 5 * u, b.top + 7.5f * u, b.right, b.bottom, rr, rr, stroke);

@@ -55,6 +55,9 @@ public class GridView extends View {
 
         /** a long press while picking for another app: a closer look */
         void onPeek(GridView from, Media.Item it);
+
+        /** arranging: a photo was put down; the photos in their new order */
+        void onFeedArranged(GridView from, List<Media.Item> order);
     }
 
     static final int[] LEVELS = {1, 2, 3, 4, 5, 6, 8};
@@ -163,6 +166,13 @@ public class GridView extends View {
     // the photo that is open in the viewer leaves its place empty
     private long ghost = Long.MIN_VALUE;
 
+    // arranging by hand: hold a photo, it lifts off and follows the finger
+    private boolean arranging;
+    private int dragIdx = -1;
+    private long dragKey = Long.MIN_VALUE;
+    private float dragX, dragY, grabX, grabY, dragW, dragH;
+    private long liftAt;
+
     // fast scroll
     private long lastScrollAt = -10000;
     private boolean dragFast;
@@ -206,7 +216,7 @@ public class GridView extends View {
 
             @Override
             public boolean onSingleTapUp(MotionEvent e) {
-                if (pinchedThisTouch) return true;
+                if (pinchedThisTouch || arranging) return true;
                 int en = entryAt(e.getX(), e.getY());
                 if (en < 0 || eItem[en] < 0) return true;
                 Media.Item it = items.get(eItem[en]);
@@ -223,6 +233,11 @@ public class GridView extends View {
             @Override
             public void onLongPress(MotionEvent e) {
                 if (pinchedThisTouch || pinching || listener == null) return;
+                if (arranging) {
+                    int en = entryAt(e.getX(), e.getY());
+                    if (en >= 0 && eItem[en] >= 0) lift(en, e.getX(), e.getY());
+                    return;
+                }
                 if (peek) {
                     if (strokeState == 1) return;
                     int en = entryAt(e.getX(), e.getY());
@@ -378,6 +393,73 @@ public class GridView extends View {
         return out;
     }
 
+    // ---- arranging by hand ----
+
+    void setArranging(boolean on) {
+        arranging = on;
+        if (!on && dragIdx >= 0) putDown();
+        invalidate();
+    }
+
+    boolean arranging() {
+        return arranging;
+    }
+
+    private void lift(int en, float x, float y) {
+        RectF r = new RectF();
+        screenRect(en, 1f, r);
+        dragIdx = eItem[en];
+        dragKey = items.get(dragIdx).key();
+        grabX = x - r.left;
+        grabY = y - r.top;
+        dragW = r.width();
+        dragH = r.height();
+        dragX = x;
+        dragY = y;
+        liftAt = SystemClock.uptimeMillis();
+        scroller.forceFinished(true);
+        ViewParent p = getParent();
+        if (p != null) p.requestDisallowInterceptTouchEvent(true);
+        performHapticFeedback(HapticFeedbackConstants.LONG_PRESS);
+        invalidate();
+    }
+
+    /**
+     * The lifted photo takes the place of the photo under the finger, once the
+     * finger is well inside it (so places can't flip back and forth); the
+     * others glide to make room.
+     */
+    private void retarget() {
+        if (dragIdx < 0) return;
+        int en = entryAt(dragX, dragY);
+        if (en < 0 || eItem[en] < 0 || eItem[en] == dragIdx) return;
+        float top = ey[en] - scrollY, ix = ew[en] * 0.2f, iy = eh[en] * 0.2f;
+        if (dragX < ex[en] + ix || dragX > ex[en] + ew[en] - ix || dragY < top + iy || dragY > top + eh[en] - iy) return;
+        int target = eItem[en];
+        HashMap<Long, RectF> old = screenRects();
+        Media.Item it = items.remove(dragIdx);
+        items.add(target, it);
+        dragIdx = target;
+        relayout();
+        scrollY = clamp(scrollY, 0, maxScroll());
+        startMorph(old, false, radius);
+        morphMs = Motion.ms(260);
+        performHapticFeedback(HapticFeedbackConstants.CLOCK_TICK);
+    }
+
+    private void putDown() {
+        if (dragIdx < 0) return;
+        HashMap<Long, RectF> old = screenRects();
+        old.put(dragKey, new RectF(dragX - grabX, dragY - grabY, dragX - grabX + dragW, dragY - grabY + dragH));
+        dragIdx = -1;
+        dragKey = Long.MIN_VALUE;
+        startMorph(old, false, radius);
+        morphMs = Motion.ms(300);
+        performHapticFeedback(HapticFeedbackConstants.CLOCK_TICK);
+        if (listener != null) listener.onFeedArranged(this, new ArrayList<>(items));
+        invalidate();
+    }
+
     void setGhost(long key) {
         ghost = key;
         invalidate();
@@ -503,6 +585,12 @@ public class GridView extends View {
         items = list;
         this.dated = dated;
         this.byModified = byModified;
+        if (dragIdx >= 0) {
+            // new content while a photo is lifted: it stays lifted if it is still here
+            dragIdx = -1;
+            for (int i = 0; i < list.size(); i++) if (list.get(i).key() == dragKey) dragIdx = i;
+            if (dragIdx < 0) dragKey = Long.MIN_VALUE;
+        }
         if (!sharedSel && !selected.isEmpty()) {
             Set<Long> present = new HashSet<>();
             for (Media.Item it : list) present.add(it.key());
@@ -979,6 +1067,14 @@ public class GridView extends View {
                     continue;
                 }
                 Media.Item it = items.get(eItem[e]);
+                if (dragIdx >= 0 && it.key() == dragKey) {
+                    // where the lifted photo will land: a faint place
+                    screenRect(e, entryU(e, u), tmp);
+                    fill.setColor(t.plate);
+                    fill.setAlpha(150);
+                    c.drawRoundRect(tmp, rad, rad, fill);
+                    continue;
+                }
                 float ue = entryU(e, u);
                 boolean moving = screenRect(e, ue, tmp);
                 if (tmp.bottom < 0 || tmp.top > H) continue;
@@ -1008,6 +1104,37 @@ public class GridView extends View {
             thumbs.frameEnd();
         }
         c.restore();
+
+        if (dragIdx >= 0 && dragIdx < items.size()) {
+            // near the top or bottom edge the feed moves along under the lifted photo
+            float zone = 56 * dp, v = 0;
+            if (dragY < zone) v = -(zone - dragY) / zone;
+            else if (dragY > H - zone) v = (dragY - (H - zone)) / zone;
+            if (v != 0) {
+                float before = scrollY;
+                scrollY = clamp(scrollY + v * 16 * dp, 0, maxScroll());
+                if (scrollY != before) retarget();
+                again = true;
+            }
+            // the lifted photo, a little larger, its shadow on the ground beneath
+            long ld = Motion.ms(160);
+            float lu = ld <= 0 ? 1f : Math.min(1f, (now - liftAt) / (float) ld);
+            if (lu < 1f) again = true;
+            float sc = 1f + 0.05f * Motion.ease(lu);
+            float l = dragX - grabX, tp = dragY - grabY;
+            RectF r = new RectF(l, tp, l + dragW, tp + dragH);
+            r.inset(-r.width() * (sc - 1f) / 2f, -r.height() * (sc - 1f) / 2f);
+            fill.setColor(0xff000000);
+            fill.setAlpha(Math.round(90 * lu));
+            RectF sh = new RectF(r);
+            sh.offset(0, 6 * dp);
+            c.drawRoundRect(sh, radius, radius, fill);
+            drawItem(c, items.get(dragIdx), r, 1f, placeholder, now, radius);
+            ring.setStrokeWidth(Math.max(1, Math.round(1.5f * dp)));
+            ring.setColor(t.accent);
+            ring.setAlpha(255);
+            c.drawRoundRect(r, radius, radius, ring);
+        }
 
         again |= drawFastScroll(c, now);
         if (settling) again = true;
@@ -1183,6 +1310,17 @@ public class GridView extends View {
                 dragFast = false;
                 lastScrollAt = SystemClock.uptimeMillis();
                 invalidate();
+            }
+            return true;
+        }
+        if (dragIdx >= 0) {
+            if (act == MotionEvent.ACTION_MOVE) {
+                dragX = e.getX();
+                dragY = e.getY();
+                retarget();
+                invalidate();
+            } else if (act == MotionEvent.ACTION_UP || act == MotionEvent.ACTION_CANCEL) {
+                putDown();
             }
             return true;
         }

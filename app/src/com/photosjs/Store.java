@@ -28,7 +28,7 @@ final class Store extends SQLiteOpenHelper {
     }
 
     Store(Context c) {
-        super(c.getApplicationContext(), "photosjs.db", null, 2);
+        super(c.getApplicationContext(), "photosjs.db", null, 3);
     }
 
     @Override
@@ -36,12 +36,60 @@ final class Store extends SQLiteOpenHelper {
         db.execSQL("CREATE TABLE albums (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL, created INTEGER NOT NULL, pos INTEGER NOT NULL DEFAULT 0)");
         db.execSQL("CREATE TABLE album_items (album INTEGER NOT NULL, item INTEGER NOT NULL, added INTEGER NOT NULL, PRIMARY KEY (album, item))");
         db.execSQL("CREATE TABLE hidden (item INTEGER PRIMARY KEY, at INTEGER NOT NULL)");
+        createOrders(db);
+    }
+
+    /** 3: photos (and folder boards) arranged by hand, per view: "all", "f:<bucket>", "a:<album>", "folders" */
+    private static void createOrders(SQLiteDatabase db) {
+        db.execSQL("CREATE TABLE IF NOT EXISTS orders (view TEXT NOT NULL, item INTEGER NOT NULL, pos INTEGER NOT NULL, PRIMARY KEY (view, item))");
     }
 
     @Override
     public void onUpgrade(SQLiteDatabase db, int from, int to) {
         // 2: albums can be arranged by hand
         if (from < 2) db.execSQL("ALTER TABLE albums ADD COLUMN pos INTEGER NOT NULL DEFAULT 0");
+        if (from < 3) createOrders(db);
+    }
+
+    // ---- orders by hand ----
+
+    /** every view's order: view -> (key -> place) */
+    Map<String, Map<Long, Integer>> orders() {
+        Map<String, Map<Long, Integer>> out = new HashMap<>();
+        Cursor c = getReadableDatabase().rawQuery("SELECT view, item, pos FROM orders", null);
+        try {
+            while (c.moveToNext()) {
+                Map<Long, Integer> m = out.get(c.getString(0));
+                if (m == null) {
+                    m = new HashMap<>();
+                    out.put(c.getString(0), m);
+                }
+                m.put(c.getLong(1), c.getInt(2));
+            }
+        } finally {
+            c.close();
+        }
+        return out;
+    }
+
+    /** this view in this order, from now on */
+    void setOrder(String view, List<Long> keys) {
+        SQLiteDatabase db = getWritableDatabase();
+        db.beginTransaction();
+        try {
+            db.delete("orders", "view = ?", new String[] {view});
+            android.database.sqlite.SQLiteStatement ins =
+                    db.compileStatement("INSERT OR REPLACE INTO orders (view, item, pos) VALUES (?, ?, ?)");
+            for (int i = 0; i < keys.size(); i++) {
+                ins.bindString(1, view);
+                ins.bindLong(2, keys.get(i));
+                ins.bindLong(3, i);
+                ins.executeInsert();
+            }
+            db.setTransactionSuccessful();
+        } finally {
+            db.endTransaction();
+        }
     }
 
     // ---- albums ----

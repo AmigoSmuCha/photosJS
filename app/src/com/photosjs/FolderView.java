@@ -46,7 +46,7 @@ public class FolderView extends View {
         void onHoldEnd(float x, float y, boolean cancel);
 
         /** arranging: a board was put down; the boards in their new order */
-        void onArranged(List<Media.Folder> order);
+        void onArranged(FolderView from, List<Media.Folder> order);
     }
 
     static final int[] LEVELS = {1, 2, 3};
@@ -323,7 +323,7 @@ public class FolderView extends View {
         morphMs = Motion.ms(300);
         morphStart = morphMs > 0 ? now : -1;
         performHapticFeedback(HapticFeedbackConstants.CLOCK_TICK);
-        if (listener != null) listener.onArranged(new ArrayList<>(folders));
+        if (listener != null) listener.onArranged(this, new ArrayList<>(folders));
         invalidate();
     }
 

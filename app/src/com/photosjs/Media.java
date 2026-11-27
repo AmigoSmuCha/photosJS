@@ -129,7 +129,7 @@ final class Media {
     // ---- sorting ----
 
     static final int BY_TAKEN = 0, BY_MODIFIED = 1, BY_NAME = 2, BY_SIZE = 3, BY_HAND = 4;
-    // "by hand" is for albums only: the order they were arranged in
+    // "by hand": the order things were arranged in (photos, folder boards, albums)
     static final String[] SORT_NAMES = {"date taken", "date modified", "name", "size", "by hand"};
 
     /** Sorts in place. descending = newest / z-a / largest first. */
@@ -182,6 +182,26 @@ final class Media {
             f.newestModified = Math.max(f.newestModified, it.modified);
         }
         return out;
+    }
+
+    /**
+     * By hand: photos that were never arranged (new ones) first, newest first;
+     * then the arranged ones in their places.
+     */
+    static void sortByHand(List<Item> items, final Map<Long, Integer> pos) {
+        Collections.sort(items, new Comparator<Item>() {
+            @Override
+            public int compare(Item a, Item b) {
+                Integer pa = pos != null ? pos.get(a.key()) : null, pb = pos != null ? pos.get(b.key()) : null;
+                if (pa == null && pb == null) {
+                    int r = Long.compare(b.taken, a.taken);
+                    return r != 0 ? r : Long.compare(b.key(), a.key());
+                }
+                if (pa == null) return -1;
+                if (pb == null) return 1;
+                return Integer.compare(pa, pb);
+            }
+        });
     }
 
     static void sortFolders(List<Folder> folders, final int by, final boolean descending) {

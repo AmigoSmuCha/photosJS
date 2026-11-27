@@ -130,9 +130,10 @@ public class BarView extends View {
     }
 
     /** Arranging albums: the same bar as selecting, with "arrange albums" and "done". */
-    void setArranging(boolean on) {
-        label = on ? "arrange albums" : null;
-        setSelecting(on, 1, null);
+    /** Arranging (albums, boards or photos): the label, and "done"; null ends it. */
+    void setArranging(String what) {
+        label = what;
+        setSelecting(what != null, 1, null);
     }
 
     void setSelecting(boolean on, int count, String[] actions) {
