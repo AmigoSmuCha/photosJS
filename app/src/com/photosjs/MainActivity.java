@@ -113,6 +113,8 @@ public class MainActivity extends Activity implements GridView.Listener, FolderV
     // one photo for another app (ViewActivity: cameraJS's last shot), grown from its thumbnail
     private boolean viewing;
     private RectF viewFrom;
+    // the sender's thumbnail corners (cameraJS passes them), px
+    private float viewRadius;
 
     @Override
     protected void onCreate(Bundle saved) {
@@ -238,6 +240,7 @@ public class MainActivity extends Activity implements GridView.Listener, FolderV
         final Uri uri = in.getData();
         android.graphics.Rect b = in.getSourceBounds();
         viewFrom = b != null ? new RectF(b) : null;
+        viewRadius = in.getFloatExtra("com.photosjs.extra.RADIUS", 7 * dp);
         if (uri == null) {
             finish();
             return;
@@ -258,7 +261,7 @@ public class MainActivity extends Activity implements GridView.Listener, FolderV
                         }
                         List<Media.Item> one = new ArrayList<>();
                         one.add(it);
-                        viewer.open(one, 0, viewFrom, 7 * dp);
+                        viewer.open(one, 0, viewFrom, viewRadius);
                     }
                 });
             }
@@ -1677,7 +1680,7 @@ public class MainActivity extends Activity implements GridView.Listener, FolderV
 
     @Override
     public float thumbRadius() {
-        if (viewing) return 7 * dp;
+        if (viewing) return viewRadius;
         return viewerFrom != null ? viewerFrom.radiusNow() : 0;
     }
 

@@ -20,7 +20,8 @@ import java.util.List;
  * The settings, as a whole page at the end of the swipe. Every row shows its
  * current choice and a short line on what it does. The same stepper
  * everywhere: tap the right side of the value to step forward, the left side
- * to step back; tapping the name steps forward. Or swipe the value sideways:
+ * to step back; the name does nothing (the user, 2026-11-28: only the arrows
+ * or the gesture change a setting). Or swipe the value sideways:
  * it follows the finger, and the next one slides in after it. What is
  * pressed lights up in the lamp colour; nothing gets a box. Changes are live.
  */
@@ -295,7 +296,8 @@ public class SettingsPage extends View {
             case MotionEvent.ACTION_DOWN:
                 scroller.forceFinished(true);
                 pressedRow = rowAt(e.getY());
-                if (!steppable(pressedRow)) pressedRow = -1;
+                // only the value's half answers: the name is for reading
+                if (!steppable(pressedRow) || side == 0) pressedRow = -1;
                 pressedSide = side;
                 downX = e.getX();
                 downY = e.getY();
