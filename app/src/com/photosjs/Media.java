@@ -69,7 +69,30 @@ final class Media {
         return out;
     }
 
+    /** one photo or video by its content uri (another app's), or null */
+    static Item one(ContentResolver cr, Uri uri, boolean video) {
+        long id;
+        try {
+            id = ContentUris.parseId(uri);
+        } catch (Throwable e) {
+            return null;
+        }
+        if (id < 0) return null;
+        List<Item> out = new ArrayList<>();
+        query(cr, uri, video, out, null, null);
+        if (out.isEmpty()) {
+            // by the index's own address (the uri may name another volume)
+            query(cr, video ? MediaStore.Video.Media.EXTERNAL_CONTENT_URI : MediaStore.Images.Media.EXTERNAL_CONTENT_URI,
+                    video, out, MediaStore.MediaColumns._ID + "=?", new String[]{String.valueOf(id)});
+        }
+        return out.isEmpty() ? null : out.get(0);
+    }
+
     private static void query(ContentResolver cr, Uri uri, boolean video, List<Item> out) {
+        query(cr, uri, video, out, null, null);
+    }
+
+    private static void query(ContentResolver cr, Uri uri, boolean video, List<Item> out, String sel, String[] args) {
         String[] proj = video
                 ? new String[] {
                     MediaStore.MediaColumns._ID, MediaStore.MediaColumns.DATE_TAKEN,
@@ -88,7 +111,7 @@ final class Media {
                     MediaStore.MediaColumns.BUCKET_DISPLAY_NAME, MediaStore.MediaColumns.MIME_TYPE };
         Cursor c = null;
         try {
-            c = cr.query(uri, proj, null, null, null);
+            c = cr.query(uri, proj, sel, args, null);
             if (c == null) return;
             while (c.moveToNext()) {
                 Item it = new Item();

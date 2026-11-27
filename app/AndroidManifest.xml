@@ -65,5 +65,25 @@
                 <data android:mimeType="vnd.android.cursor.dir/video" />
             </intent-filter>
         </activity>
+
+        <!-- one photo or video for another app (cameraJS's last shot): it grows from the
+             sender's thumbnail over a see-through window and back = finish, so the back
+             key lands in the camera again. Standard launch: it joins the caller's task. -->
+        <activity
+            android:name=".ViewActivity"
+            android:exported="true"
+            android:label="photosJS"
+            android:theme="@style/Glass"
+            android:screenOrientation="portrait"
+            android:windowSoftInputMode="adjustResize"
+            android:configChanges="orientation|screenSize|screenLayout|keyboardHidden|uiMode|density">
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <!-- the gallery's own photos only (content://media/...) -->
+                <data android:scheme="content" android:host="media" android:mimeType="image/*" />
+                <data android:scheme="content" android:host="media" android:mimeType="video/*" />
+            </intent-filter>
+        </activity>
     </application>
 </manifest>

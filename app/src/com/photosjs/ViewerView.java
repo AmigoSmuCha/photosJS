@@ -280,6 +280,20 @@ public class ViewerView extends View {
         if (listener != null) listener.onViewerIndex(current());
     }
 
+    /** the same photo in a longer list (another app opened one; the feed came later) */
+    void widen(List<Media.Item> list, long key) {
+        if (!open || closing) return;
+        for (int i = 0; i < list.size(); i++) {
+            if (list.get(i).key() == key) {
+                items = new ArrayList<>(list);
+                index = i;
+                request();
+                invalidate();
+                return;
+            }
+        }
+    }
+
     void close() {
         if (!open || closing) return;
         closing = true;

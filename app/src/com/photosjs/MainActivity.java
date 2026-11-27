@@ -110,6 +110,9 @@ public class MainActivity extends Activity implements GridView.Listener, FolderV
     private final List<String> pickTypes = new ArrayList<>();
     private final Set<Long> chosen = new LinkedHashSet<>();     // in the order they were chosen
     private String pickFor = "";
+    // one photo for another app (ViewActivity: cameraJS's last shot), grown from its thumbnail
+    private boolean viewing;
+    private RectF viewFrom;
 
     @Override
     protected void onCreate(Bundle saved) {
@@ -122,6 +125,7 @@ public class MainActivity extends Activity implements GridView.Listener, FolderV
         thumbs.addListener(this);
         dp = getResources().getDisplayMetrics().density;
         if (this instanceof PickActivity) readPick();
+        viewing = this instanceof ViewActivity;
 
         root = new FrameLayout(this);
         LinearLayout column = new LinearLayout(this);
@@ -205,8 +209,58 @@ public class MainActivity extends Activity implements GridView.Listener, FolderV
         getContentResolver().registerContentObserver(MediaStore.Video.Media.EXTERNAL_CONTENT_URI,
                 true, observer);
 
+        if (viewing) {
+            // only the viewer shows; behind it, the app that asked (the camera, live)
+            column.setVisibility(View.INVISIBLE);
+            hideBarsForViewing();
+            openViewing();
+            if (hasMedia()) load();
+            return;
+        }
         if (hasMedia()) load();
         else askMedia();
+    }
+
+    private void hideBarsForViewing() {
+        getWindow().setDecorFitsSystemWindows(false);
+        android.view.WindowInsetsController c = getWindow().getInsetsController();
+        if (c != null) {
+            c.hide(android.view.WindowInsets.Type.systemBars());
+            c.setSystemBarsBehavior(android.view.WindowInsetsController.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE);
+        }
+    }
+
+    /** the photo the intent names, read on its own so it opens before the whole index has loaded */
+    private void openViewing() {
+        Intent in = getIntent();
+        final Uri uri = in.getData();
+        android.graphics.Rect b = in.getSourceBounds();
+        viewFrom = b != null ? new RectF(b) : null;
+        if (uri == null) {
+            finish();
+            return;
+        }
+        final String type = in.resolveType(this);
+        io.execute(new Runnable() {
+            @Override
+            public void run() {
+                final Media.Item it = Media.one(getContentResolver(), uri,
+                        type != null ? type.startsWith("video/") : uri.toString().contains("/video/"));
+                main.post(new Runnable() {
+                    @Override
+                    public void run() {
+                        if (it == null) {
+                            finish();
+                            overridePendingTransition(0, 0);
+                            return;
+                        }
+                        List<Media.Item> one = new ArrayList<>();
+                        one.add(it);
+                        viewer.open(one, 0, viewFrom, 7 * dp);
+                    }
+                });
+            }
+        });
     }
 
     private GridView grid() {
@@ -232,7 +286,7 @@ public class MainActivity extends Activity implements GridView.Listener, FolderV
         Window w = getWindow();
         w.setStatusBarColor(t.bg);
         w.setNavigationBarColor(t.plate);
-        root.setBackgroundColor(t.bg);
+        root.setBackgroundColor(viewing ? 0 : t.bg);
         top.setTheme(t);
         bar.setTheme(t);
         for (GridView g : grids()) g.setTheme(t);
@@ -614,6 +668,8 @@ public class MainActivity extends Activity implements GridView.Listener, FolderV
         sortFeed(list, "all");
         photos.setItems(list, dated(by), by == Media.BY_MODIFIED, how);
         photoCount = list.size();
+        // viewing one photo: once the feed is known, swiping reaches the others
+        if (viewing && viewer.isOpen() && viewer.current() != null) viewer.widen(list, viewer.current().key());
     }
 
     private void refreshFolders(boolean toTop) {
@@ -1612,12 +1668,14 @@ public class MainActivity extends Activity implements GridView.Listener, FolderV
 
     @Override
     public RectF thumbRect(Media.Item it) {
+        if (viewing) return viewFrom != null ? new RectF(viewFrom) : null;
         if (viewerFrom == null || !viewerFrom.reveal(it.key())) return null;
         return viewerFrom.screenRectOf(it.key());
     }
 
     @Override
     public float thumbRadius() {
+        if (viewing) return 7 * dp;
         return viewerFrom != null ? viewerFrom.radiusNow() : 0;
     }
 
@@ -1636,6 +1694,12 @@ public class MainActivity extends Activity implements GridView.Listener, FolderV
 
     @Override
     public void onViewerClosed() {
+        if (viewing) {
+            // back where it came from: the camera
+            finish();
+            overridePendingTransition(0, 0);
+            return;
+        }
         if (viewerFrom != null) viewerFrom.setGhost(Long.MIN_VALUE);
         viewerFrom = null;
     }
@@ -2226,6 +2290,11 @@ public class MainActivity extends Activity implements GridView.Listener, FolderV
     @Override
     public void onBackPressed() {
         GridView g = activeGrid();
+        if (viewing && !viewer.isOpen() && !editor.isOpen() && !fan.isOpen() && !sheet.isOpen()) {
+            finish();
+            overridePendingTransition(0, 0);
+            return;
+        }
         if (picking) {
             if (fan.isOpen()) {
                 fan.close();

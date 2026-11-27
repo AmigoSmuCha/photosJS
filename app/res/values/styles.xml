@@ -7,4 +7,14 @@
         <item name="android:navigationBarColor">@color/plate</item>
         <item name="android:colorAccent">@color/ember</item>
     </style>
+    <!-- the viewer over whatever sent the photo (the camera stays visible as it grows) -->
+    <style name="Glass" parent="@android:style/Theme.Material.NoActionBar">
+        <item name="android:windowIsTranslucent">true</item>
+        <item name="android:windowBackground">@android:color/transparent</item>
+        <item name="android:windowAnimationStyle">@null</item>
+        <item name="android:statusBarColor">@android:color/transparent</item>
+        <item name="android:navigationBarColor">@android:color/transparent</item>
+        <item name="android:colorAccent">@color/ember</item>
+        <item name="android:windowLayoutInDisplayCutoutMode">shortEdges</item>
+    </style>
 </resources>
