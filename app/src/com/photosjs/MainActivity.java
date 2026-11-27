@@ -225,7 +225,9 @@ public class MainActivity extends Activity implements GridView.Listener, FolderV
         getWindow().setDecorFitsSystemWindows(false);
         android.view.WindowInsetsController c = getWindow().getInsetsController();
         if (c != null) {
-            c.hide(android.view.WindowInsets.Type.systemBars());
+            // like cameraJS: the status bar stays (nothing jumps on the way in or out)
+            c.show(android.view.WindowInsets.Type.statusBars());
+            c.hide(android.view.WindowInsets.Type.navigationBars());
             c.setSystemBarsBehavior(android.view.WindowInsetsController.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE);
         }
     }
